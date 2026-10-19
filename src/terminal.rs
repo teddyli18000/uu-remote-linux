@@ -304,7 +304,12 @@ pub fn run_view_helper(session_id: u32, cols: u16, rows: u16) {
 
 impl TerminalConn {
     pub fn new(out: UnboundedSender<Vec<u8>>) -> Self { Self { out } }
-    fn send(&self, kind: u8, session: u32, payload: &[u8]) { let _ = self.out.send(encode(kind, session, payload)); }
+    fn send(&self, kind: u8, session: u32, payload: &[u8]) {
+        let queued = self.out.send(encode(kind, session, payload)).is_ok();
+        if matches!(kind, LIST_RESP | KILL_RESP) {
+            log::info!("Terminal management reply queued: type={} session={} payload_bytes={} queued={}", kind, session, payload.len(), queued);
+        }
+    }
 
     pub fn handle(&self, data: &[u8]) {
         let Some(frame) = decode(data) else { log::warn!("Terminal frame rejected: bytes={}", data.len()); return; };

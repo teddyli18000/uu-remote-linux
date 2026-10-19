@@ -438,8 +438,15 @@ impl WebRtcSession {
                     let out_label = label.clone();
                     tokio::spawn(async move {
                         while let Some(message) = outbound_rx.recv().await {
+                            let terminal_reply = if out_label == "BINARY_DATA_CHANNEL"
+                                && message.get(5).is_some_and(|kind| matches!(*kind, crate::terminal::LIST_RESP | crate::terminal::KILL_RESP)) {
+                                crate::terminal::decode(&message)
+                            } else { None };
                             if let Err(e) = out_channel.send(&bytes::Bytes::from(message)).await {
                                 log::warn!("{} send failed: {}", out_label, e); break;
+                            }
+                            if let Some(frame) = terminal_reply {
+                                log::info!("Terminal management reply sent: type={} session={} payload_bytes={}", frame.kind, frame.session, frame.payload.len());
                             }
                         }
                     });
