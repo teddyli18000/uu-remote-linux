@@ -345,13 +345,16 @@ impl TerminalConn {
             CLOSE => if let Some(s) = existing { *s.sink.lock().unwrap() = None; s.signal(libc::SIGHUP); },
             DETACH => if let Some(s) = existing { *s.sink.lock().unwrap() = None },
             KILL_REQ => {
-                let id = if frame.session != 0 { frame.session } else {
-                    json(&frame.payload).get("session_id").and_then(|x| x.as_u64()).unwrap_or(0) as u32
-                };
+                // Windows 4.43 terminal_management_model sends a request ID in the header,
+                // and the target session_id in JSON. Empty payloads retain legacy header targeting.
+                let id = if frame.payload.is_empty() { Some(frame.session) } else {
+                    json(&frame.payload).get("session_id").and_then(|x| x.as_u64()).and_then(|v| u32::try_from(v).ok())
+                }.filter(|id| *id != 0);
+                let Some(id) = id else { self.send(KILL_RESP, frame.session, &reply(1, "Invalid session_id")); return; };
                 let target = registry().lock().unwrap().get(&id).cloned();
                 match target {
-                    Some(s) => { *s.sink.lock().unwrap() = None; s.signal(libc::SIGHUP); s.signal(libc::SIGKILL); self.send(KILL_RESP, id, &reply(0, "ok")); }
-                    None => self.send(KILL_RESP, id, &reply(1, "Session not found")),
+                    Some(s) => { *s.sink.lock().unwrap() = None; s.signal(libc::SIGHUP); s.signal(libc::SIGKILL); self.send(KILL_RESP, frame.session, &reply(0, "ok")); }
+                    None => self.send(KILL_RESP, frame.session, &reply(1, "Session not found")),
                 }
             }
             LIST_REQ => {
@@ -401,6 +404,62 @@ mod tests {
             assert_eq!(response.session, request);
             assert!(json(&response.payload).is_array());
         }
+    }
+    #[test]
+    fn kill_management_targets_payload_and_preserves_other_sessions() {
+        struct Cleanup(Vec<Arc<Session>>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for s in &self.0 {
+                    let live = registry().lock().unwrap().get(&s.id).is_some_and(|v| Arc::ptr_eq(v, s));
+                    if live { s.signal(libc::SIGKILL); }
+                }
+            }
+        }
+        let mut cleanup = Cleanup(Vec::new());
+        let target = spawn(u32::MAX - 10, 80, 24, Some("/bin/sh")).unwrap();
+        cleanup.0.push(target.clone());
+        let other = spawn(u32::MAX - 11, 80, 24, Some("/bin/sh")).unwrap();
+        cleanup.0.push(other.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = TerminalConn::new(tx);
+        let response = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>, request, code| {
+            let f = decode(&rx.try_recv().unwrap()).unwrap();
+            assert_eq!(f.kind, KILL_RESP);
+            assert_eq!(f.session, request, "KILL response must echo the request ID");
+            assert_eq!(json(&f.payload)["code"], code);
+        };
+        let wait_removed = |id| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while registry().lock().unwrap().contains_key(&id) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!registry().lock().unwrap().contains_key(&id), "killed shell must be reaped and removed");
+        };
+
+        // A request ID can equal another live session ID; it is never the payload's kill target.
+        let payload = serde_json::json!({"session_id": target.id}).to_string();
+        conn.handle(&encode(KILL_REQ, other.id, payload.as_bytes()));
+        response(&mut rx, other.id, 0);
+        wait_removed(target.id);
+        assert_eq!(unsafe { libc::kill(other.pid, 0) }, 0, "unselected shell must survive");
+
+        for payload in [b"{".as_slice(), b"{}", b"[]", b"null", br#"{"session_id":0}"#,
+            br#"{"session_id":-1}"#, br#"{"session_id":1.5}"#, br#"{"session_id":"1"}"#,
+            br#"{"session_id":4294967296}"#, br#"{"session_id":8589934580}"#] {
+            conn.handle(&encode(KILL_REQ, other.id, payload));
+            response(&mut rx, other.id, 1);
+        }
+        assert!(registry().lock().unwrap().contains_key(&other.id));
+        assert_eq!(unsafe { libc::kill(other.pid, 0) }, 0, "invalid payload must not fall back to header");
+        conn.handle(&encode(KILL_REQ, 0, &[]));
+        response(&mut rx, 0, 1);
+        conn.handle(&encode(KILL_REQ, 7, payload.as_bytes()));
+        response(&mut rx, 7, 1); // well-formed target that has already exited
+
+        conn.handle(&encode(KILL_REQ, other.id, &[])); // legacy header-target client
+        response(&mut rx, other.id, 0);
+        wait_removed(other.id);
     }
     #[test]
     fn force_redraw_shrinks_then_restores_latest_size() {

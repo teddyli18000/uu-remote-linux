@@ -67,7 +67,17 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 同日经用户授权将修复 `ec23703` 替换到车端独立 release 目录，保留旧版及回退路径；未改变系统包或自启配置。安装文件与运行中进程 SHA256 均为 `5cc836bf22d1e5cab064074c922b5f15f91cd2aa3f5f2fd1d11f4e4cabe9f150`，车端 `ldd` 无缺失，重启后服务 enabled/running、云端 ready、SSH 正常。官方 Windows 客户端的保留会话重连仍待用户验收，不能由服务在线状态替代。
 
-## 车端部署方案（尚未执行）
+### Windows 会话管理终止修复（2026-10-19）
+
+上一项修复安装后，车端收到 Windows 的 KILL_REQ（type 11），header 与前一条 LIST_REQ 相同，为管理请求编号，JSON payload 为 16 字节；当时实际活会话只有 `1`、`2`。原实现优先将非零 header 当目标，因此用户多次点击“终止”都未结束 shell。先前验收只覆盖空 payload、header 直接指定目标的方式，未覆盖 Windows 的管理请求方式。
+
+只读核对当前官方 Windows UU 4.43.0.3607：`terminal_management_model` 的 KILL_REQ 构造路径（`0x1410bcfc6` 至 `0x1410bd0ea`）将 `session_id` 放入 JSON；KILL_RESP 分支（`0x1410bf2de`）使用 `code/message` 解析器（`0x1410bf840`）。修复为非空 payload 严格解析非零 u32 目标，非法或溢出时直接拒绝，不回退到 header；空 payload 保留旧客户端方式。所有 KILL_RESP 回显请求 header。
+
+定向回归使用两个真实 PTY，让请求编号恰好等于另一活会话编号，检查只结束 JSON 指定的目标、目标被回收且从列表移除、另一 shell 存活，并覆盖畸形/缺失/零/负数/浮点/字符串/溢出 ID 和旧方式。新增测试在旧实现失败，原因是目标 shell 未被终止。`terminal-acceptance` 的一条 KILL 路径也改为 Windows 请求格式，另一条仍验收旧格式。
+
+修复后 Ubuntu 18.04 release 单测 191 passed、0 failed、6 ignored，默认 X11 release 构建通过。真实 PTY/VTE 验收通过，包括 Windows 格式终止目标后另一会话继续显示，以及列表回收、断线重连、窗口恢复、中文/ANSI、尺寸锁定、关闭回显和 exit/CLOSE/旧格式 KILL。构建直接引用的最高 glibc 版本为 GLIBC_2.25，GTK/VTE 运行库解析正常；官方客户端点击“终止”仍需车端验收。
+
+## 车端部署步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
 2. 获得部署授权后，安装缺少的系统运行库（尤其 `libvte-2.91-0`）。先把本次 Bionic 构建的二进制传到临时路径，运行 `ldd`，确认无缺失库。

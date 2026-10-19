@@ -208,6 +208,9 @@ Xvfb-only input/clipboard test; never run that fixture against a user's real des
   LIST_RESP is a bare array; Windows 4.42.0 requires every row to contain `session_id`, `name`, `shell`,
   `state`, `last_active_ms` and `created_at_ms`. Both timestamps are integer milliseconds. Testing only an
   empty list misses required-field failures; verify reattachment with an existing detached session.
+  Windows 4.43 KILL_REQ uses the header as a request ID and JSON `session_id` as the target;
+  echo the request header in KILL_RESP (`code/message`). Only empty payloads use legacy header targeting.
+  Reject invalid, zero or overflowing JSON IDs without falling back to the header.
 - Port mapping (capture_type 9): Message 27 `PortMappingFrame {1 session_id, 2 rule_id, 3 stream_id, 4 type, 5 payload}`
   on FILE_DATA_CHANNEL only. Types SYN=0, FIN=1, DATA=2, SYN_ACK=3, DATA_ACK=4 (ignored by both sides). SYN payload
   JSON `{"version","target_host","target_port"}` → connect → SYN_ACK `{"version","ok","error"}`; DATA raw bytes both ways.

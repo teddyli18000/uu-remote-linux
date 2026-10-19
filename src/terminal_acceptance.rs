@@ -729,8 +729,11 @@ pub fn acceptance() -> Result<String, String> {
     let id5 = session5.id;
     probes.lock().unwrap().push(session5.clone());
     close_view(&session5);
-    conn5.handle(&encode(KILL_REQ, id5, &[]));
-    let killed = wait_for_response(&mut rx5, id5, KILL_RESP, std::time::Duration::from_secs(3))?;
+    // Windows management uses a request ID independent of the JSON target. The primary
+    // session deliberately has that header ID and must survive to render the final screen.
+    let kill_payload = serde_json::json!({"session_id": id5}).to_string();
+    conn5.handle(&encode(KILL_REQ, id, kill_payload.as_bytes()));
+    let killed = wait_for_response(&mut rx5, id, KILL_RESP, std::time::Duration::from_secs(3))?;
     if json(&killed.payload).get("code").and_then(|v| v.as_i64()) != Some(0) {
         return Err("KILL was not acknowledged".into());
     }
