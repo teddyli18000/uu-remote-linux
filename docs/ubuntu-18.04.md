@@ -63,7 +63,9 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 只读检查官方 Windows UU 4.42.0.2770 的 `terminal_management_model.cpp` 解析路径：每条记录都必须包含整数 `last_active_ms`（读取地址 `0x1410a209a`）和 `created_at_ms`，缺字段走解析失败分支。上游沿用的列表应答缺 `last_active_ms`；此次 VTE 改动没有修改该应答。现已补字段，创建时初始化，PTY 输出、输入、OPEN/RESIZE/SIGNAL/DETACH 时更新；不记录终端内容。
 
-验证：新增必需字段断言在旧实现失败；修复后 Ubuntu 18.04 release 单测 190 passed、0 failed、6 ignored，默认 X11 release 构建通过。专用 Xvfb/Openbox 下真实 PTY/VTE 验收通过，包括非空列表字段校验、DETACH/重连、通道释放、多会话、关闭/重开视图、关闭回显及 exit/CLOSE/KILL。启动验收前等待窗口管理器就绪，并设置 `NO_AT_BRIDGE=1`，避免 WSL 图形环境干扰。修复版尚未替换到车端，官方 Windows 客户端的保留会话重连仍待上车验收。
+验证：新增必需字段断言在旧实现失败；修复后 Ubuntu 18.04 release 单测 190 passed、0 failed、6 ignored，默认 X11 release 构建通过。专用 Xvfb/Openbox 下真实 PTY/VTE 验收通过，包括非空列表字段校验、DETACH/重连、通道释放、多会话、关闭/重开视图、关闭回显及 exit/CLOSE/KILL。启动验收前等待窗口管理器就绪，并设置 `NO_AT_BRIDGE=1`，避免 WSL 图形环境干扰。
+
+同日经用户授权将修复 `ec23703` 替换到车端独立 release 目录，保留旧版及回退路径；未改变系统包或自启配置。安装文件与运行中进程 SHA256 均为 `5cc836bf22d1e5cab064074c922b5f15f91cd2aa3f5f2fd1d11f4e4cabe9f150`，车端 `ldd` 无缺失，重启后服务 enabled/running、云端 ready、SSH 正常。官方 Windows 客户端的保留会话重连仍待用户验收，不能由服务在线状态替代。
 
 ## 车端部署方案（尚未执行）
 
