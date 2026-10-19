@@ -87,7 +87,9 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 依据 [uu-cli PR #1](https://github.com/teddyli18000/uu-cli/pull/1) 的 `4193a3d` 协议说明，测试实现增加空 `Message` 字段 28 `TerminalSessionChanged`：在 OPEN/重附着、DETACH、实际退出并移除 registry 条目后广播变化。每个 BINARY 通道订阅变化，通过已有顺序应答队列发出通知；关闭通道时取消订阅任务。通知不携带终端内容，KILL 应答及连接替换逻辑不变。
 
-此通知的客户端刷新效果及 BINARY 通道路由仍待官方 Windows 客户端实测，不能仅凭空消息的协议定义认定修复成功。测试构建在 Ubuntu 18.04 上通过 release 测试（191 passed、0 failed、6 ignored）和构建，仅在 WSL 重启运行；车端未更新。
+`92230fc` 已在独立 WSL 设备、官方 Windows 客户端的桌面复用连接上验收：用户确认新建/关闭窗口后列表开始更新，点击终止也正常。日志显示 OPEN 和 DETACH 后均先通知、再收到 LIST；KILL_RESP 发出后 shell 退出，移除条目并通知，客户端再发 LIST，返回数量由 1 变成 0。这验证了此路径上的 BINARY 通道路由及列表刷新；原先 shell 已被终止而界面残留的问题，缺失环节是变化通知。
+
+测试构建在 Ubuntu 18.04 上通过 release 测试（191 passed、0 failed、6 ignored）和构建，`92230fc` 的 GitHub CI 也通过。WSL 运行二进制 SHA256 为 `80a7ec9bfba55bb70edc9e177b0311754aa8595c8342a88d038d9943c547b628`。终止后再次新建、独立终端与桌面连接切换仍待验收；本次仅在 WSL 重启运行，车端及 `v0.2.12-aic.1` 发布包均未更新。
 
 ## 车端部署步骤
 
