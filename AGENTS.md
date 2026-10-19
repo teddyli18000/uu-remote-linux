@@ -168,7 +168,11 @@ Xvfb-only input/clipboard test; never run that fixture against a user's real des
 ## 7. Protocol facts (verified against the official clients)
 
 - Connection types (ConnectOptions.capture_type): 1 desktop, 5 file transfer, 8 terminal, 9 port mapping.
-  Video is sent only for desktop connections (capture_type ≤ 2).
+  Video starts only after desktop ownership is granted: initially for capture_type ≤ 2, or after the room
+  loop handles a later SimpleAction 4 `capture_desktop` on an existing tool peer. WSL logs showed a terminal
+  offer already negotiating video and later receiving action 4 without a new desktop offer. The same peer
+  then acquires the input lease and starts its dormant media/desktop initialization once; independent
+  tool peers remain alive. Never grant input ownership merely because a tool connection is created.
 - CONTROL messages are protobuf `Message {1 seq, 2 timestamp, <which> payload}`; input arrives as JSON
   (`kbd_press`, `mouse_move_absolute` with normalized 0..1 floats, ...).
 - Echo: the viewer sends SimpleAction action 0 with its FeatureFlag; the host answers action 1 with args

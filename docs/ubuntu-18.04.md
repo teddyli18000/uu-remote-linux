@@ -95,6 +95,16 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 测试构建在 Ubuntu 18.04 上通过 release 测试（191 passed、0 failed、6 ignored）和构建，`92230fc` 的 GitHub CI 也通过。WSL 运行二进制 SHA256 为 `80a7ec9bfba55bb70edc9e177b0311754aa8595c8342a88d038d9943c547b628`。终止后再次新建、独立终端与桌面连接切换仍待验收；本次仅在 WSL 重启运行，车端及 `v0.2.12-aic.1` 发布包均未更新。
 
+[uu-cli PR #2](https://github.com/teddyli18000/uu-cli/pull/2) 的 `809b89d` 后续分析提出通知应走 CONTROL，同时将路由依据标记为推断。本项目上述实测证明 BINARY 通知后 Windows 确实重新发送 LIST 并更新界面，因此不能仅据该推断迁移已工作的路由；尚未验证的独立连接路径应单独核对。
+
+### 先开终端再开桌面的缺口
+
+WSL 的 `484f7df` 在先开终端的连接上收到 SimpleAction 4 `capture_desktop`，却记录为未处理；同一运行期间未收到新的 `capture_type=1` offer。原代码仅在建连时 `desktop=true` 才启动桌面编码、创建输入租约和桌面生命周期任务，后续 RPC case 15 则只回成功。这能解释该路径为何没有画面；没有证据表明本次本地窗口关闭改动修改了连接逻辑。
+
+这次终端 offer 已包含 audio `sendrecv` 和 video `recvonly`，应答保留媒体段，视频轨道确认 `h264=true`。`main` 现按后续 action 4 请求，由 room loop 仲裁同一 peer 的桌面能力，维护输入所有权并启动一次现有音视频、初始化、剪贴板及光标路径。音频 sender 和可用编码在初次 SDP 时预先协商，媒体采集等桌面激活后才开始；未升级的工具连接不抢输入。过期请求在关闭旧桌面前拒绝，headless 或无可用采集/Portal manager 时拒绝升级，Portal 继续沿用授权和锁屏门控。
+
+Ubuntu 18.04 release 测试 193 passed、0 failed、6 ignored，构建通过。新增真实 local SCTP 测试覆盖 action 4 请求前原输入所有者不变、仲裁后目标获得租约、文件连接继续应答及重复激活幂等；该测试不包含实际媒体画面。桌面优先的路径已由用户确认桌面与终端同时正常，终端优先路径仍待新版的 Windows 界面验收。
+
 ## 车端部署步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。

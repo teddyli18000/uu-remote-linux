@@ -65,10 +65,38 @@ use webrtc::WebRtcSession;
 
 /// Set before a normal return when the host must come back in the other mode (signed in / out).
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+enum RoomEvent { Signal(SignalingEvent), PromoteDesktop(String) }
 
 fn superseded_peer_ids(sessions: &HashMap<String, WebRtcSession>, ice: &str, desktop: bool) -> Vec<String> {
-    sessions.iter().filter(|(id, peer)| id.as_str() == ice || (desktop && peer.desktop))
+    sessions.iter().filter(|(id, peer)| id.as_str() == ice || (desktop && peer.is_desktop()))
         .map(|(id, _)| id.clone()).collect()
+}
+
+async fn promote_desktop_peer(sessions: &mut HashMap<String, WebRtcSession>, ice: &str,
+    input: &Arc<InputInjector>, portal: Option<&Arc<desktop_session::PortalDesktop>>) -> Result<bool, String> {
+    let Some(target) = sessions.get(ice) else { return Err("desktop request peer is no longer active".into()); };
+    if matches!(target.pc.connection_state(),
+        ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed
+        | ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed
+        | ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected) {
+        target.clear_desktop_request();
+        return Err("desktop request peer is no longer connected".into());
+    }
+    if target.is_desktop() { target.clear_desktop_request(); return Ok(false); }
+    if desktop_backend::headless() { target.clear_desktop_request(); return Err("desktop capture is unavailable in headless mode".into()); }
+    if portal.is_none() && target.capture.init_error.is_some() {
+        target.clear_desktop_request();
+        return Err("desktop capture is unavailable for this peer".into());
+    }
+    let old_desktops: Vec<_> = sessions.iter().filter(|(id, peer)| id.as_str() != ice && peer.is_desktop())
+        .map(|(id, _)| id.clone()).collect();
+    for id in old_desktops {
+        if let Some(old) = sessions.remove(&id) { let _ = old.pc.close().await; }
+    }
+    let capture_portal = sessions.get(ice).and_then(|peer| peer.capture.portal.clone());
+    if let Some(portal) = portal { portal.begin(); }
+    else { input.bind_portal(capture_portal); }
+    Ok(sessions.get(ice).is_some_and(WebRtcSession::activate_desktop))
 }
 fn released_peer_ids<T>(sessions: &HashMap<String, T>, ice: Option<&serde_json::Value>) -> Vec<String> {
     let ice = ice.map(|id| id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string()));
@@ -527,6 +555,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
     let mut capture_types: HashMap<String, (u64,crate::session_ice::SessionIce)> = HashMap::new();
     let mut mac_by_ice: HashMap<String, bool> = HashMap::new();
     let mut next_mac = false;
+    let (desktop_request_tx, mut desktop_request_rx) = mpsc::unbounded_channel::<String>();
 
     loop {
         if *shutdown.borrow() {
@@ -608,12 +637,25 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
         loop {
             let event = tokio::select! {
                 biased;
-                _ = shutdown.changed() => Some(SignalingEvent::Stop),
-                command = commands.recv(), if assist.is_some() => Some(SignalingEvent::AssistCommand(command.unwrap_or(assist::Command::Stop))),
-                _ = assist_tick.tick(), if assist.is_some() => Some(SignalingEvent::AssistTick),
-                event = rx_event.recv() => event,
+                _ = shutdown.changed() => Some(RoomEvent::Signal(SignalingEvent::Stop)),
+                command = commands.recv(), if assist.is_some() => Some(RoomEvent::Signal(SignalingEvent::AssistCommand(command.unwrap_or(assist::Command::Stop)))),
+                _ = assist_tick.tick(), if assist.is_some() => Some(RoomEvent::Signal(SignalingEvent::AssistTick)),
+                request = desktop_request_rx.recv() => request.map(RoomEvent::PromoteDesktop),
+                event = rx_event.recv() => event.map(RoomEvent::Signal),
             };
-            let Some(evt) = event else { break; };
+            let Some(event) = event else { break; };
+            let evt = match event {
+                RoomEvent::PromoteDesktop(ice) => {
+                    let mut sessions = webrtc_sessions.lock().await;
+                    match promote_desktop_peer(&mut sessions, &ice, &input, portal_desktop.as_ref()).await {
+                        Ok(true) => log::info!("Terminal peer promoted to desktop: active_peers={}", sessions.len()),
+                        Ok(false) => {},
+                        Err(error) => log::warn!("Desktop promotion refused: {error}"),
+                    }
+                    continue;
+                }
+                RoomEvent::Signal(event) => event,
+            };
             match evt {
                 SignalingEvent::Stop | SignalingEvent::AssistCommand(assist::Command::Stop) => {
                     return Ok(());
@@ -645,8 +687,8 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed |
                         ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed)).map(|(id, _)| id.clone()).collect();
                     let mut desktop_ended = false;
-                    for id in ended { if let Some(s) = sessions.remove(&id) { desktop_ended |= s.desktop; let _ = s.pc.close().await; } }
-                    if desktop_ended && !sessions.values().any(|s| s.desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
+                    for id in ended { if let Some(s) = sessions.remove(&id) { desktop_ended |= s.is_desktop(); let _ = s.pc.close().await; } }
+                    if desktop_ended && !sessions.values().any(WebRtcSession::is_desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
                     if let Some(s) = assist.as_mut() { s.tick()?; }
                 }
                 SignalingEvent::Connected => {
@@ -713,8 +755,8 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed |
                         ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed)).map(|(k, _)| k.clone()).collect();
                     let mut desktop_ended = false;
-                    for k in ended { if let Some(old) = sessions.remove(&k) { desktop_ended |= old.desktop; let _ = old.pc.close().await; } }
-                    if desktop_ended && !sessions.values().any(|s| s.desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
+                    for k in ended { if let Some(old) = sessions.remove(&k) { desktop_ended |= old.is_desktop(); let _ = old.pc.close().await; } }
+                    if desktop_ended && !sessions.values().any(WebRtcSession::is_desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
                     if let Some(s) = assist.as_mut() { s.tick()?; }
 
                     if soac.msg_type == "offer" {
@@ -747,8 +789,10 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         if desktop && portal_desktop.is_none() { input.bind_portal(session_capture.portal.clone()); }
                         if desktop { if let Some(portal) = &portal_desktop { portal.begin(); } }
                         match WebRtcSession::new(session_capture, input.clone(), signaling_client.clone(), desktop, transport,
-                            if desktop { portal_desktop.clone() } else { None }).await {
+                            portal_desktop.clone()).await {
                             Ok(sess) => {
+                                sess.set_desktop_request_sender(desktop_request_tx.clone(), ice.clone());
+                                sess.set_controller_mac(controller_mac);
                                 // Register before awaiting SDP: shutdown can always close
                                 // a peer whose answer may already be queued to the viewer.
                                 sessions.insert(ice.clone(), sess);
@@ -793,11 +837,11 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                     let mut desktop_ended = false;
                     for k in targets {
                         if let Some(old) = sessions.remove(&k) {
-                            desktop_ended |= old.desktop;
+                            desktop_ended |= old.is_desktop();
                             if let Err(e) = old.pc.close().await { log::warn!("Close released peer failed: {}", e); }
                         }
                     }
-                    if desktop_ended && !sessions.values().any(|s| s.desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
+                    if desktop_ended && !sessions.values().any(WebRtcSession::is_desktop) { if let Some(s) = assist.as_mut() { s.session_ended()?; } }
                     if let Some(s) = assist.as_mut() { s.tick()?; }
                 }
                 SignalingEvent::Disconnected => {

@@ -215,3 +215,62 @@ async fn locked_control_unlock_requests_and_tools_work_without_a_video_frame() {
         drop(lock);
     }).await.expect("locked bootstrap/tool regression exceeded deadline");
 }
+
+#[tokio::test]
+async fn terminal_capture_desktop_promotes_same_peer_without_closing_tools_or_replacing_input_early() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let input=Arc::new(InputInjector::without_desktop());
+        let (_lock,locked)=tokio::sync::watch::channel(Some(true));
+        let portal=Arc::new(crate::desktop_session::PortalDesktop::with_lock_state(
+            Arc::new(ScreenCapture::unavailable("synthetic portal awaits consent".into())),locked));
+        let (desktop,desktop_viewer)=connect(input.clone(),true,Some(portal.clone()),&["CONTROL_DATA_CHANNEL"]).await;
+        tokio::time::timeout(Duration::from_secs(3),async {
+            while !desktop.desktop_input_active_for_test() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.expect("initial desktop did not acquire input");
+        let (terminal,terminal_viewer)=connect(input.clone(),false,Some(portal.clone()),&["CONTROL_DATA_CHANNEL","BINARY_DATA_CHANNEL"]).await;
+        let (files,mut file_viewer)=connect(input.clone(),false,Some(portal.clone()),&["CONTROL_DATA_CHANNEL","FILE_DATA_CHANNEL"]).await;
+        let (request_tx,mut request_rx)=mpsc::unbounded_channel();
+        terminal.set_desktop_request_sender(request_tx,"terminal-peer".into());
+
+        send(&terminal_viewer,"CONTROL_DATA_CHANNEL",crate::initialization::envelope(1,0,3,&[8,4])).await;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(3),request_rx.recv()).await.unwrap().unwrap(),"terminal-peer");
+        assert!(desktop.desktop_input_active_for_test());
+        assert!(!terminal.is_desktop());
+        assert!(!terminal.desktop_input_active_for_test());
+
+        let mut sessions=HashMap::from([("desktop-peer".into(),desktop),("terminal-peer".into(),terminal),("files-peer".into(),files)]);
+        // Without a usable capture or Portal manager, refusal must leave the current owner intact.
+        assert!(crate::promote_desktop_peer(&mut sessions,"terminal-peer",&input,None).await.is_err());
+        assert!(sessions["desktop-peer"].desktop_input_active_for_test());
+        assert!(!sessions["terminal-peer"].is_desktop());
+
+        assert!(crate::promote_desktop_peer(&mut sessions,"terminal-peer",&input,Some(&portal)).await.unwrap());
+        assert!(!sessions.contains_key("desktop-peer"));
+        assert!(sessions["terminal-peer"].is_desktop());
+        assert!(sessions["terminal-peer"].desktop_input_active_for_test());
+        assert_eq!(sessions["terminal-peer"].activation_count_for_test(),1);
+        assert_eq!(sessions["files-peer"].pc.connection_state(),RTCPeerConnectionState::Connected);
+
+        // A repeat Action4 is ignored after activation and cannot replace the new input lease.
+        send(&terminal_viewer,"CONTROL_DATA_CHANNEL",crate::initialization::envelope(2,0,3,&[8,4])).await;
+        assert!(tokio::time::timeout(Duration::from_millis(150),request_rx.recv()).await.is_err());
+        assert!(!crate::promote_desktop_peer(&mut sessions,"terminal-peer",&input,Some(&portal)).await.unwrap());
+        assert_eq!(sessions["terminal-peer"].activation_count_for_test(),1);
+        assert!(sessions["terminal-peer"].desktop_input_active_for_test());
+
+        let directory=std::env::temp_dir().join(format!("uu-promotion-files-{}-{}",std::process::id(),rand::random::<u64>()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut read=bytes(1,&[8,7]); read.extend(bytes(2,directory.to_str().unwrap().as_bytes()));
+        let mut request=bytes(1,&[8,99]); request.extend(bytes(8,&bytes(10,&read)));
+        send(&file_viewer,"CONTROL_DATA_CHANNEL",crate::initialization::envelope(3,0,21,&request)).await;
+        receive(&mut file_viewer.messages,"FILE_DATA_CHANNEL",22).await;
+        assert_eq!(sessions["files-peer"].pc.connection_state(),RTCPeerConnectionState::Connected);
+        std::fs::remove_dir(directory).unwrap();
+
+        for (_,peer) in sessions { let _=peer.pc.close().await; }
+        let _=terminal_viewer.pc.close().await;
+        let _=file_viewer.pc.close().await;
+        let _=desktop_viewer.pc.close().await;
+        for router in [&terminal_viewer.router,&file_viewer.router,&desktop_viewer.router] { router.lock().await.stop().await.unwrap(); }
+    }).await.expect("desktop promotion localpeer regression exceeded deadline");
+}
