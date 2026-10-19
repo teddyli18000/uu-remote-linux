@@ -205,6 +205,9 @@ Xvfb-only input/clipboard test; never run that fixture against a user's real des
   `operation_result`. Host root is shown as ":/" (此电脑); home is "~/".
 - Terminal: BINARY channel, RPC 28 check_env → 24; frames `"TERM"`, version 1, type (enum+1), 2 flag bytes,
   session u32 LE, length u32 LE, payload; JSON `{cols,rows,shell,option}`.
+  LIST_RESP is a bare array; Windows 4.42.0 requires every row to contain `session_id`, `name`, `shell`,
+  `state`, `last_active_ms` and `created_at_ms`. Both timestamps are integer milliseconds. Testing only an
+  empty list misses required-field failures; verify reattachment with an existing detached session.
 - Port mapping (capture_type 9): Message 27 `PortMappingFrame {1 session_id, 2 rule_id, 3 stream_id, 4 type, 5 payload}`
   on FILE_DATA_CHANNEL only. Types SYN=0, FIN=1, DATA=2, SYN_ACK=3, DATA_ACK=4 (ignored by both sides). SYN payload
   JSON `{"version","target_host","target_port"}` → connect → SYN_ACK `{"version","ok","error"}`; DATA raw bytes both ways.

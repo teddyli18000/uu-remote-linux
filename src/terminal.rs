@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -74,6 +74,7 @@ struct Session {
     id: u32,
     shell: String,
     created_ms: u64,
+    last_active_ms: AtomicU64,
     master: OwnedFd,
     pid: i32,
     sink: Mutex<Option<UnboundedSender<Vec<u8>>>>,
@@ -86,6 +87,7 @@ impl Session {
     /// Lock order sink → scrollback → view matches OPEN/ensure_view. Holding the sink lock through
     /// the view fanout makes a chunk appear in replay or live output, never both.
     fn record_output(&self, data: &[u8]) {
+        self.touch();
         let mut sink = self.sink.lock().unwrap();
         {
             let mut sb = self.scrollback.lock().unwrap();
@@ -109,6 +111,7 @@ impl Session {
             log::warn!("Terminal local view dropped: session={} reason={}", self.id, reason);
         }
     }
+    fn touch(&self) { self.last_active_ms.fetch_max(now_ms(), Ordering::Relaxed); }
     /// Serialize snapshot/install against record_output, so output is replayed or live, never both.
     fn ensure_view(&self) {
         if !terminal_view::available() { let _ = terminal_view::spawn(self.id, 80, 24); return; }
@@ -233,7 +236,8 @@ fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result
             if id != 0 && !registry().lock().unwrap().contains_key(&id) { break id; }
         }
     };
-    let session = Arc::new(Session { id, shell: shell.clone(), created_ms: now_ms(), pid: child.id() as i32,
+    let created_ms = now_ms();
+    let session = Arc::new(Session { id, shell: shell.clone(), created_ms, last_active_ms: AtomicU64::new(created_ms), pid: child.id() as i32,
         master: pty.master, sink: Mutex::new(None), scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((cols, rows)),
         view: Mutex::new(terminal_view::spawn(id, cols, rows)) });
     let mut reader = std::fs::File::from(session.master.try_clone().map_err(|e| format!("pty dup failed: {e}"))?);
@@ -306,6 +310,9 @@ impl TerminalConn {
         let Some(frame) = decode(data) else { log::warn!("Terminal frame rejected: bytes={}", data.len()); return; };
         if frame.kind != STDIN { log::info!("Terminal frame: type={} session={} payload_bytes={}", frame.kind, frame.session, frame.payload.len()); }
         let existing = registry().lock().unwrap().get(&frame.session).cloned();
+        if matches!(frame.kind, OPEN | STDIN | RESIZE | SIGNAL | DETACH) {
+            if let Some(s) = &existing { s.touch(); }
+        }
         match frame.kind {
             OPEN => {
                 let v = json(&frame.payload);
@@ -351,10 +358,12 @@ impl TerminalConn {
                 let sessions: Vec<serde_json::Value> = registry().lock().unwrap().values().map(|s| {
                     let attached = s.sink.lock().unwrap().is_some();
                     serde_json::json!({"session_id": s.id, "name": format!("bash-{}", s.id), "shell": s.shell,
-                        "state": if attached { "running" } else { "detached" }, "created_at_ms": s.created_ms})
+                        "state": if attached { "running" } else { "detached" }, "created_at_ms": s.created_ms,
+                        "last_active_ms": s.last_active_ms.load(Ordering::Relaxed)})
                 }).collect();
                 log::info!("Terminal list sessions: count={}", sessions.len());
-                // Official Mac 4.42.0 (handleListSessionsReq) sends a bare array with the request's header ID.
+                // Official Mac 4.42.0 sends a bare array with the request's header ID.
+                // Windows 4.42.0 terminal_management_model (0x1410a209a) requires last_active_ms in every row.
                 self.send(LIST_RESP, frame.session, serde_json::Value::Array(sessions).to_string().as_bytes());
             }
             UNLOCK_REQ => self.send(UNLOCK_RESP, frame.session, &reply(0, "ok")),
@@ -397,6 +406,7 @@ mod tests {
     fn force_redraw_shrinks_then_restores_latest_size() {
         let pty = nix::pty::openpty(None, None).unwrap();
         let session = Arc::new(Session { id: u32::MAX - 2, shell: "/bin/sh".into(), created_ms: now_ms(),
+            last_active_ms: AtomicU64::new(now_ms()),
             master: pty.master, pid: 0, sink: Mutex::new(None),
             scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((80, 24)), view: Mutex::new(None) });
         let rows = |s: &Session| {
@@ -417,6 +427,7 @@ mod tests {
         let id = u32::MAX - 1;
         let history: Vec<u8> = (0..SCROLLBACK).map(|n| (n % 251) as u8).collect();
         let session = Arc::new(Session { id, shell: "/bin/sh".into(), created_ms: now_ms(),
+            last_active_ms: AtomicU64::new(now_ms()),
             master: pty.master, pid: 0, sink: Mutex::new(None),
             scrollback: Mutex::new(history.iter().copied().collect()), size: Mutex::new((80, 24)), view: Mutex::new(None) });
         registry().lock().unwrap().insert(id, session.clone());
@@ -427,6 +438,7 @@ mod tests {
         for _ in 0..2 {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let conn = TerminalConn::new(tx);
+            session.last_active_ms.store(1, Ordering::Relaxed);
             conn.handle(&encode(OPEN, id, br#"{"cols":80,"rows":24}"#));
             let opened = decode(&rx.try_recv().unwrap()).unwrap();
             assert_eq!(opened.kind, OPEN_RESP);
@@ -447,6 +459,12 @@ mod tests {
             conn.handle(&encode(LIST_REQ, 7, &[]));
             assert_eq!(decode(&rx.try_recv().unwrap()).unwrap().kind, LIST_RESP);
             conn.handle(&encode(DETACH, id, &[]));
+            conn.handle(&encode(LIST_REQ, 8, &[]));
+            let list = decode(&rx.try_recv().unwrap()).unwrap();
+            let sessions = json(&list.payload);
+            let row = sessions.as_array().unwrap().iter().find(|s| s["session_id"] == id).unwrap();
+            assert_eq!(row["state"], "detached");
+            assert!(row["last_active_ms"].as_u64().unwrap() >= session.created_ms);
         }
     }
     #[test]
@@ -468,6 +486,10 @@ mod tests {
             let session = sessions.iter().find(|s| s["session_id"] == resp.session).unwrap();
             assert_eq!(session["shell"], "/bin/sh");
             assert_eq!(session["state"], "running");
+            // Windows 4.42.0's terminal_management_model rejects a nonempty list
+            // unless every row includes both integer timestamps (empty lists skip this).
+            let last_active = session["last_active_ms"].as_u64().expect("Windows requires last_active_ms");
+            assert!(last_active >= session["created_at_ms"].as_u64().unwrap());
 
             conn.handle(&encode(STDIN, resp.session, b"echo uu-term-ok; exit 3\n"));
             let mut seen = Vec::new();

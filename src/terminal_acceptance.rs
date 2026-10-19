@@ -193,10 +193,16 @@ fn list_sessions(
     const REQUEST_ID: u32 = u32::MAX - 7;
     conn.handle(&encode(LIST_REQ, REQUEST_ID, &[]));
     let response = wait_for_response(rx, REQUEST_ID, LIST_RESP, std::time::Duration::from_secs(2))?;
-    json(&response.payload)
+    let sessions = json(&response.payload)
         .as_array()
         .cloned()
-        .ok_or_else(|| "terminal list response was not an array".into())
+        .ok_or_else(|| "terminal list response was not an array".to_string())?;
+    for session in &sessions {
+        let created = session["created_at_ms"].as_u64().ok_or("terminal session missing created_at_ms")?;
+        let active = session["last_active_ms"].as_u64().ok_or("terminal session missing last_active_ms")?;
+        if active < created { return Err("terminal activity precedes session creation".into()); }
+    }
+    Ok(sessions)
 }
 
 fn wait_for_list_presence(

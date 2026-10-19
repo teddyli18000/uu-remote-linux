@@ -139,6 +139,9 @@ sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
   keep the shell/window alive; reconnects reuse it. Closing the local window does not end the shell. The
   remote client controls terminal dimensions. Without VTE or a display the remote terminal remains available.
   The additional runtime package is `libvte-2.91-0`.
+- Session lists now include the required `last_active_ms` field, fixing a protocol omission that makes
+  Windows UU 4.42.0 reject existing terminal sessions. First creation and reattachment require separate
+  client acceptance; see the [Bionic guide](docs/ubuntu-18.04.md).
 - For Ubuntu 18.04 X11 builds, validation limits and deployment steps, see the [Bionic guide](docs/ubuntu-18.04.md)
   (Chinese). Build inside an 18.04 userspace; binaries released from newer distributions need newer glibc.
 - On NVIDIA GPUs use an FFmpeg build with `h264_nvenc`; otherwise the CPU encoder (libx264) is used.

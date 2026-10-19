@@ -120,6 +120,7 @@ sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 - 需要 Rust 工具链（<https://rustup.rs>）。
 - `libgtk-3-dev` 是可选的：没有 GTK 时只能在终端里扫码登录（也可以设置 `UU_NO_GTK=1` 主动关闭登录窗口）。
 - `libvte-2.91-dev` 启用本机终端视图：每个 UU Terminal session 在被控端桌面显示同一 PTY 的输出，断线保留，重连复用；关闭本机窗口不会结束 shell。远端决定终端尺寸。本机视图只读，缺少 VTE 或图形显示时保留原远程终端能力。运行库为 `libvte-2.91-0`。
+- 已补齐会话列表的 `last_active_ms`，修复 Windows UU 4.42.0 在已有终端会话时立即报“连接已断开”的协议缺口；首次创建和保留会话后重连须分别验收，见 [18.04 说明](docs/ubuntu-18.04.md)。
 - Ubuntu 18.04 默认 X11 构建、验证范围及部署步骤见 [18.04 说明](docs/ubuntu-18.04.md)。请在 18.04 用户空间构建，不要直接使用较新系统的发布二进制。
 - NVIDIA 显卡用户需要使用带 `h264_nvenc` 的 FFmpeg，否则自动回落到 CPU 编码（libx264）。
 

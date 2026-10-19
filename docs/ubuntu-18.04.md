@@ -40,7 +40,7 @@ ldd target/release/uuremote-server
 | 同会话终端 | 真实 TerminalConn→原 PTY→VTE：中文/ANSI、120 行连续输出顺序及唯一性、stderr、Ctrl-C、关闭回显、远端 80×24→100×30→80×24、本机窗口缩放均通过 |
 | 生命周期与隔离 | 两个 PTY/session/window 独立；DETACH、连接通道释放、重连、关闭/重开视图保留 PID/cwd/env；无害运行命令断线后完成；exit/CLOSE/KILL 与 LIST 状态通过 |
 | 文件与端口映射 | 已有临时文件上传写块/确认、目录与压缩列表测试通过；新增 loopback TCP 真实 SYN/DATA 双向收发/FIN EOF 通过。未经过官方客户端网络通道 |
-| 官方 Windows 客户端 | 自动操作被工具报告为用户按 Escape 停止；尚无官方客户端连接/重连验收结论 |
+| 官方 Windows 客户端 | 原始 WSL 验收未完成官方客户端验证。后续车端日志确认桌面与首次创建终端成功，但非空会话列表触发客户端初始化失败；见下方修复记录 |
 
 本机终端视图的实际 X11 截图（全部是合成验收内容）：
 
@@ -56,6 +56,14 @@ UU_X11_ACCEPTANCE=1 UU_DESKTOP_BACKEND=x11 cargo test --release --locked \
 ```
 
 UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探针失败。`terminal-acceptance` 创建真实临时 shell，结束后留下最终画面供查看；不登录云端。CI 的 Bionic job 在 `ubuntu:18.04` 用户空间执行构建、单测和 ABI 检查，上传二进制 artifact；本地 Xvfb 验收与官方客户端验收分别记录。
+
+### Windows 非空终端列表修复（2026-10-19）
+
+车端旧版日志：空列表后客户端发送 OPEN 并正常使用；保留一个会话后，客户端收到 LIST_RESP 便立即报断开，不再发送 OPEN。重启主机清空会话后首次创建恢复，说明首次创建成功不等于重连成功。
+
+只读检查官方 Windows UU 4.42.0.2770 的 `terminal_management_model.cpp` 解析路径：每条记录都必须包含整数 `last_active_ms`（读取地址 `0x1410a209a`）和 `created_at_ms`，缺字段走解析失败分支。上游沿用的列表应答缺 `last_active_ms`；此次 VTE 改动没有修改该应答。现已补字段，创建时初始化，PTY 输出、输入、OPEN/RESIZE/SIGNAL/DETACH 时更新；不记录终端内容。
+
+验证：新增必需字段断言在旧实现失败；修复后 Ubuntu 18.04 release 单测 190 passed、0 failed、6 ignored，默认 X11 release 构建通过。专用 Xvfb/Openbox 下真实 PTY/VTE 验收通过，包括非空列表字段校验、DETACH/重连、通道释放、多会话、关闭/重开视图、关闭回显及 exit/CLOSE/KILL。启动验收前等待窗口管理器就绪，并设置 `NO_AT_BRIDGE=1`，避免 WSL 图形环境干扰。修复版尚未替换到车端，官方 Windows 客户端的保留会话重连仍待上车验收。
 
 ## 车端部署方案（尚未执行）
 
