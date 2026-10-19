@@ -25,7 +25,9 @@ ldd target/release/uuremote-server
 
 无可用图形显示或构建时缺少 VTE 时，原远程终端仍可用，日志会报告视图不可用。本机渲染滞后超过队列容量时关闭该视图，避免阻塞远程输出；重开时使用现有有界 scrollback。
 
-主动关闭采用渲染器到主机的独立状态字节 6，由 GTK `delete-event` 发出；EOF、渲染器被清理或故障不会发送此请求。主机结束对应 shell 及独立前台进程组，沿用已有 EXIT/列表通知流程。Ubuntu 18.04 release 测试 192 passed、0 failed、6 ignored；新增真实 PTY 检查覆盖关闭时前台命令仍在运行及另一个会话保持存活，独立 Xvfb 上实际发送 `WM_DELETE_WINDOW` 也确认状态 6 和渲染器正常退出。完整 Windows 界面列表同步待用户验收，本次仅更新 WSL。
+主动关闭采用渲染器到主机的独立状态字节 6，由 GTK `delete-event` 发出；EOF、渲染器被清理或故障不会发送此请求。主机结束对应 shell 及独立前台进程组，沿用已有 EXIT/列表通知流程。Ubuntu 18.04 release 测试 192 passed、0 failed、6 ignored；新增真实 PTY 检查覆盖关闭时前台命令仍在运行及另一个会话保持存活，独立 Xvfb 上实际发送 `WM_DELETE_WINDOW` 也确认状态 6 和渲染器正常退出。
+
+`484f7df` 在 WSL 上完成 Windows 客户端验收：先保持桌面连接，创建两个终端，再在 WSL 桌面点 × 关闭其中一个本机窗口。用户确认对应条目消失，另一个仍正常。日志在 UTC 2026-10-19 17:32:24 显示本机关闭请求、对应 shell 退出、变化通知、随后 LIST 数量从 2 变成 1；另一个会话继续收到 RESIZE。该行为仅部署到 WSL，车端和 `v0.2.12-aic.1` 发布包未更新。
 
 ## 验证记录
 
