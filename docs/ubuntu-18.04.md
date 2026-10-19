@@ -77,6 +77,8 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 修复后 Ubuntu 18.04 release 单测 191 passed、0 failed、6 ignored，默认 X11 release 构建通过。真实 PTY/VTE 验收通过，包括 Windows 格式终止目标后另一会话继续显示，以及列表回收、断线重连、窗口恢复、中文/ANSI、尺寸锁定、关闭回显和 exit/CLOSE/旧格式 KILL。构建直接引用的最高 glibc 版本为 GLIBC_2.25，GTK/VTE 运行库解析正常；官方客户端点击“终止”仍需车端验收。
 
+同日将修复 `fcbc353` 安装到车端独立 release 目录，保留上一版 `ec23703` 供回退，沿用现有配置与自启服务。安装文件和运行中进程的 SHA256 均为 `b14bef91fbeaae498fe15f3efcc9b81619a6bcb1a929cb728c13a03d96d2a902`，车端 `ldd` 无缺失；重启后服务 enabled/running、NRestarts=0、云端 ready、SSH 正常。尚待用户用官方 Windows 客户端验收目标终止及另一会话继续工作。
+
 ## 车端部署步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
