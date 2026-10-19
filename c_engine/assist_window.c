@@ -606,7 +606,8 @@ static gboolean apply_qr(gpointer data) {
 void uu_login_ui_set_qr(const unsigned char *rgba, int edge) {
     if (!ui_started || init_state != 1 || atomic_load(&closed) || edge <= 0) return;
     QrUpdate *u = g_new(QrUpdate, 1);
-    u->rgba = g_memdup2(rgba, (gsize)edge * edge * 4); u->edge = edge;
+    gsize size = (gsize)edge * edge * 4;
+    u->rgba = g_malloc(size); memcpy(u->rgba, rgba, size); u->edge = edge;
     g_idle_add(apply_qr, u);
 }
 static gboolean apply_login_status(gpointer data) {
