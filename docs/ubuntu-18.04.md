@@ -21,9 +21,11 @@ ldd target/release/uuremote-server
 
 沿用现有 session registry 和单个 PTY reader。远程 Terminal 的输入仅写入原 PTY；PTY 输出送入原远程通道及本机 VTE 窗口。渲染进程由同一二进制启动，只渲染字节，不启动另一份 shell。关闭回显的输入不会被额外显示。
 
-远端决定 PTY 行列数，本机窗口变化不修改远端的 shell 尺寸。普通命令结束、DETACH 和连接断开后 shell/窗口保留；重新 OPEN 原 session 时复用。关闭本机窗口不结束任务，重新 OPEN 可恢复视图。CLOSE、KILL、显式 `exit` 保留既有结束语义；已退出 session 不会冒充活 session。持久性不跨服务/系统重启。
+远端决定 PTY 行列数，本机窗口变化不修改远端的 shell 尺寸。普通命令结束、DETACH 和连接断开后 shell/窗口保留；重新 OPEN 原 session 时复用。按用户更新后的要求，`main` 中主动关闭本机终端窗口会结束对应会话；PTY reader 回收后发 EXIT、移除 registry 条目并通知远端刷新列表，其他独立会话保留。渲染器故障或队列满时仅关闭视图，原 shell 保留，重新 OPEN 可恢复视图。`v0.2.12-aic.1` 仍采用旧的关窗口保留 shell 行为。CLOSE、KILL、显式 `exit` 保留既有结束语义；已退出 session 不会冒充活 session。持久性不跨服务/系统重启。
 
 无可用图形显示或构建时缺少 VTE 时，原远程终端仍可用，日志会报告视图不可用。本机渲染滞后超过队列容量时关闭该视图，避免阻塞远程输出；重开时使用现有有界 scrollback。
+
+主动关闭采用渲染器到主机的独立状态字节 6，由 GTK `delete-event` 发出；EOF、渲染器被清理或故障不会发送此请求。主机结束对应 shell 及独立前台进程组，沿用已有 EXIT/列表通知流程。Ubuntu 18.04 release 测试 192 passed、0 failed、6 ignored；新增真实 PTY 检查覆盖关闭时前台命令仍在运行及另一个会话保持存活，独立 Xvfb 上实际发送 `WM_DELETE_WINDOW` 也确认状态 6 和渲染器正常退出。完整 Windows 界面列表同步待用户验收，本次仅更新 WSL。
 
 ## 验证记录
 

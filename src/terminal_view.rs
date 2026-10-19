@@ -1,7 +1,7 @@
 //! Local, read-only VTE view for an existing remote PTY session.
 //!
 //! GTK runs in a helper process so it never races the assist window's GTK thread. The helper only
-//! receives bytes from the session's existing PTY reader; it neither spawns nor controls a shell.
+//! receives bytes from the existing PTY reader; explicit user close asks the host to end that session.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -317,7 +317,10 @@ pub(crate) fn spawn(session_id: u32, cols: u16, rows: u16) -> Option<View> {
                 let mut byte = [0u8; 1];
                 loop {
                     match output.read_exact(&mut byte) {
-                        Ok(()) => status_reader.receive(byte[0]),
+                        Ok(()) => {
+                            if byte[0] == 6 { super::close_from_local_view(session_id); }
+                            else { status_reader.receive(byte[0]); }
+                        }
                         Err(_) => break,
                     }
                 }

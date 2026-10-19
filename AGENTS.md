@@ -58,6 +58,8 @@ cargo build --release --features native-viewer,viewer-sdl --bin uuremote-viewer 
   login window only when `pkg-config gtk+-3.0` succeeds (`UU_NO_GTK=1` forces it off).
 - `pkg-config vte-2.91` additionally enables a read-only local view of each existing Terminal PTY.
   GTK stays in a renderer subprocess; keep a single PTY reader and the remote-controlled grid dimensions.
+  Explicitly closing its GTK window terminates that session and refreshes remote lists. Only a user delete
+  event requests termination; renderer crashes, pipe failures and renderer cleanup leave the PTY intact.
   Ubuntu 18.04 default X11 builds retain GTK/VTE with system libraries; see `docs/ubuntu-18.04.md`.
 - The portal feature panics in `build.rs` if GIO/PipeWire development packages are missing.
 - `vendor/webrtc-dtls` is a patched copy of the upstream crate (MIT/Apache); keep it as a path dependency.

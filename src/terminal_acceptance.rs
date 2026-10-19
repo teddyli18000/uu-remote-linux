@@ -253,6 +253,7 @@ fn open_probe_session(
 }
 
 fn close_view(session: &Session) {
+    // Renderer-only failure/recovery probe; this does not emit a user's GTK delete event.
     if let Some(mut view) = session.view.lock().unwrap().take() {
         view.close_window();
     }

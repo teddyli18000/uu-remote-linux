@@ -242,6 +242,8 @@ static gboolean on_map(GtkWidget *widget, GdkEvent *event, gpointer data) {
 
 static gboolean on_delete(GtkWidget *widget, GdkEvent *event, gpointer data) {
     (void)widget; (void)event; (void)data;
+    /* Explicit user close ends this PTY; EOF/crashes are not close requests. */
+    send_status(6);
     gtk_main_quit();
     return FALSE;
 }

@@ -205,6 +205,23 @@ fn session_changes() -> &'static tokio::sync::watch::Sender<()> {
 pub fn subscribe_session_changes() -> tokio::sync::watch::Receiver<()> { session_changes().subscribe() }
 fn sessions_changed() { session_changes().send_replace(()); }
 
+/// Only an explicit GTK delete event requests this; renderer failure leaves the PTY intact.
+pub(super) fn close_from_local_view(id: u32) {
+    let session = registry().lock().unwrap().get(&id).cloned();
+    if let Some(s) = session {
+        log::info!("Terminal local window requested session termination: session={}", id);
+        // Job-control shells give a running command its own foreground process group.
+        // End it too, otherwise it can keep the PTY slave open after the shell exits.
+        let foreground = unsafe { libc::tcgetpgrp(s.master.as_raw_fd()) };
+        if foreground > 0 && foreground != s.pid {
+            unsafe { libc::kill(-foreground, libc::SIGHUP); libc::kill(-foreground, libc::SIGKILL); }
+        }
+        s.signal(libc::SIGHUP);
+        s.signal(libc::SIGKILL);
+        // The PTY reader sends EXIT, removes the registry entry, then notifies the lists.
+    }
+}
+
 fn now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 
 fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result<Arc<Session>, String> {
@@ -475,6 +492,39 @@ mod tests {
         conn.handle(&encode(KILL_REQ, other.id, &[])); // legacy header-target client
         response(&mut rx, other.id, 0);
         wait_removed(other.id);
+    }
+    #[test]
+    fn local_window_close_ends_only_its_session() {
+        struct Cleanup(Vec<Arc<Session>>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for s in &self.0 {
+                    let foreground = unsafe { libc::tcgetpgrp(s.master.as_raw_fd()) };
+                    if foreground > 0 { unsafe { libc::kill(-foreground, libc::SIGKILL); } }
+                    if registry().lock().unwrap().contains_key(&s.id) { s.signal(libc::SIGKILL); }
+                }
+            }
+        }
+        let target = spawn(u32::MAX - 20, 80, 24, Some("/bin/sh")).unwrap();
+        let other = spawn(u32::MAX - 21, 80, 24, Some("/bin/sh")).unwrap();
+        let _cleanup = Cleanup(vec![target.clone(), other.clone()]);
+        target.write(b"sleep 30\n");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let foreground = unsafe { libc::tcgetpgrp(target.master.as_raw_fd()) };
+            if foreground > 0 && foreground != target.pid { break; }
+            assert!(std::time::Instant::now() < deadline, "test command must enter its own foreground group");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        close_from_local_view(target.id);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while registry().lock().unwrap().contains_key(&target.id) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!registry().lock().unwrap().contains_key(&target.id), "local close must reap the shell and remove its row");
+        assert!(registry().lock().unwrap().contains_key(&other.id));
+        assert_eq!(unsafe { libc::kill(other.pid, 0) }, 0, "an independent shell must survive");
+        close_from_local_view(target.id); // late close after exit is harmless
     }
     #[test]
     fn force_redraw_shrinks_then_restores_latest_size() {

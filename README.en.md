@@ -142,7 +142,9 @@ sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 - `libgtk-3-dev` is optional. Without GTK, login works with a QR code in the terminal (`UU_NO_GTK=1` disables
   the login window explicitly).
 - `libvte-2.91-dev` enables a local read-only window for each existing UU Terminal PTY session. Disconnects
-  keep the shell/window alive; reconnects reuse it. Closing the local window does not end the shell. The
+  keep the shell/window alive; reconnects reuse it. Explicitly closing the local terminal window ends
+  its shell and refreshes the remote list; independent sessions remain alive. This behavior is on
+  `main`, after `v0.2.12-aic.1`. The
   remote client controls terminal dimensions. Without VTE or a display the remote terminal remains available.
   The additional runtime package is `libvte-2.91-0`.
 - Session lists now include the required `last_active_ms` field, fixing a protocol omission that makes
