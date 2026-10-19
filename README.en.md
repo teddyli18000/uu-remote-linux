@@ -2,6 +2,12 @@
 
 [简体中文](README.md) | **English**
 
+> **This is the AIC personal fork of [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux).**
+> Our development and releases use `main`; upstream contributions use separate focused branches. Download from [this fork's Releases](https://github.com/teddyli18000/uu-remote-linux/releases).
+> `v0.2.12-aic.1` is a prerelease with Ubuntu 18.04 GTK/VTE support and a local view of existing terminal sessions. Windows desktop/terminal connection conflicts and session-list updates after termination remain under investigation; see the [release notes](docs/release-notes/v0.2.12-aic.1.md).
+> Our prerelease publishes tarballs only; Docker images are planned for stable releases.
+> Upstream descriptions and attribution are retained below; their validation records do not establish acceptance of this fork.
+
 > **A note first**
 >
 > NetEase UU Remote (网易 UU 远程) is a great remote-desktop tool, but there is no Linux version on its
@@ -11,7 +17,7 @@
 > project's host from Linux (desktop, file transfer, terminal, port mapping, remote assistance; see
 > [below](#experimental-native-viewer-uuremote-viewer)).
 > Desktop-less **Synology / NAS** boxes can run it in Docker: [deployment guide](docs/deploy-nas-docker.md#english), image
-> [`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux).
+> [`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux).
 >
 > This is a personal hobby project. **It is not affiliated with NetEase and is not an official client.**
 > If NetEase considers this project infringing or inappropriate, please DM me on X
@@ -252,7 +258,7 @@ starts at boot without a login. The viewer's remote desktop keeps showing "conne
 Log in once with `uuremote-server login --no-gui` (QR in the terminal).
 
 **Synology / NAS (Docker)**: run headless mode in a container on a desktop-less NAS (file transfer, terminal, port
-mapping): image [`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux),
+mapping): image [`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux),
 see the [NAS deployment guide](docs/deploy-nas-docker.md#english). Verified on Synology DSM 7.3 (x86_64).
 
 **Paste files from a Mac terminal**: when using Ghostty over UU's SSH port mapping,

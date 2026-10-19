@@ -2,8 +2,10 @@
 
 **简体中文** | [English](#english)
 
-镜像：[`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux)
-（标签 `latest` 或具体版本如 `v0.2.8`）
+镜像：[`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux)
+（后续稳定版使用 `latest` 或对应版本标签）
+
+当前 `v0.2.12-aic.1` 仅发布 tar 包，尚未发布本 fork 的 Docker 镜像。以下拉取步骤须等稳定镜像发布后使用；现在可按 [docker/README.md](../docker/README.md) 本地构建。
 
 把本项目主机跑在没有桌面的 NAS 上之后，就能在外面用官方 UU 远程客户端（手机 / Mac / Windows）：
 
@@ -36,7 +38,7 @@ cd /volume1/docker/uu-remote
 ```yaml
 services:
   uu-remote:
-    image: ghcr.io/vallierdev/uu-remote-linux:latest
+    image: ghcr.io/teddyli18000/uu-remote-linux:latest
     container_name: uu-remote
     network_mode: host          # 让远程连接尽量走直连，速度更快
     restart: unless-stopped
@@ -110,7 +112,9 @@ sudo docker compose down          # 停止并删除容器
 
 ## English
 
-Image: [`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux)
+The current AIC prerelease publishes tarballs only; this fork has no published Docker image yet. The pull instructions below apply after a stable image is published. For now, use the local build in [docker/README.md](../docker/README.md).
+
+Image: [`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux)
 
 Runs this project's host headless on a desktop-less NAS (x86_64, e.g. Synology DSM 7.2+ with Container Manager) for the
 official UU Remote clients: **file transfer** (folders you mount at `/data`), **terminal** (bash inside the container) and
@@ -119,7 +123,7 @@ official UU Remote clients: **file transfer** (folders you mount at `/data`), **
 ```sh
 sudo mkdir -p /volume1/docker/uu-remote/config && sudo chmod 700 /volume1/docker/uu-remote/config
 cd /volume1/docker/uu-remote
-# compose.yaml: image ghcr.io/vallierdev/uu-remote-linux:latest, network_mode: host,
+# compose.yaml: image ghcr.io/teddyli18000/uu-remote-linux:latest, network_mode: host,
 #   volumes ./config:/config and /volume1/your-share:/data  (see the Chinese section above)
 sudo docker compose pull
 sudo docker compose run --rm uu-remote login --no-gui   # scan the QR with the UU mobile app; the QR is a credential

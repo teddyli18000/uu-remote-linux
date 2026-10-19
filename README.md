@@ -2,13 +2,19 @@
 
 **简体中文** | [English](README.en.md)
 
+> **本仓库是 [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux) 的 AIC 自用 fork。**
+> 日常开发与自有发布使用 `main`，向上游贡献使用独立分支。下载见[本 fork Releases](https://github.com/teddyli18000/uu-remote-linux/releases)。
+> 当前 `v0.2.12-aic.1` 为预发布：支持 Ubuntu 18.04 的 GTK/VTE 和同会话可视化终端；Windows 端桌面/终端连接冲突及终止后的列表同步仍在排查，详见[发布说明](docs/release-notes/v0.2.12-aic.1.md)。
+> 本 fork 预发布仅提供 tar 包；Docker 镜像在后续稳定版发布。
+> 以下保留上游功能说明与署名；上游验证记录不代表本 fork 已完成全部实测。
+
 > **写在前面**
 >
 > 网易 UU 远程非常好用，但官网一直没有 Linux 版本。于是我借助 Claude 和 Codex，写了这个开源的 Linux 被控端：
 > 装上之后，就能用官方的 Mac / Windows / 手机客户端远程控制你的 Linux 电脑。
 > 现在还附带一个**实验性 Linux 控制端** `uuremote-viewer`：在 Linux 上用 UU 账号远控官方 Windows / Mac 被控端或本项目主机
 > （桌面、文件传输、终端、端口映射、远程协助，详见[下文](#实验性原生控制端uuremote-viewer)）。
-> 没有桌面的**群晖 / NAS** 也能用 Docker 部署：[部署指南](docs/deploy-nas-docker.md)，镜像 [`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux)。
+> 没有桌面的**群晖 / NAS** 也能用 Docker 部署：[部署指南](docs/deploy-nas-docker.md)，镜像 [`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux)。
 >
 > 这是个人兴趣项目，**与网易无关，也不是官方客户端**。如果网易认为本项目侵权或有不妥，
 > 请在推特私信我 **[@ai_fengshou](https://x.com/ai_fengshou)**，我会第一时间自行下架。
@@ -217,7 +223,7 @@ install -Dm644 contrib/desktop/uu-remote-linux-viewer.desktop ~/.local/share/app
 无头模式下控制端点「远程桌面」会一直显示正在连接，这是正常的。首次登录用 `uuremote-server login --no-gui` 在终端里扫码。
 
 **群晖 / NAS（Docker）**：没有桌面的 NAS 可以用容器运行无头模式（文件传输、终端、端口映射）。
-镜像 [`ghcr.io/vallierdev/uu-remote-linux`](https://github.com/VallierDev/uu-remote-linux/pkgs/container/uu-remote-linux)，
+镜像 [`ghcr.io/teddyli18000/uu-remote-linux`](https://github.com/teddyli18000/uu-remote-linux/pkgs/container/uu-remote-linux)，
 **部署步骤见 [群晖 / NAS 部署指南](docs/deploy-nas-docker.md)**。已在群晖 DSM 7.3（x86_64）上实测三项功能。
 
 **Mac 终端粘贴文件**：使用 Ghostty 通过 UU 端口映射连接 SSH 时，可安装

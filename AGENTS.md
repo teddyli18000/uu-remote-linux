@@ -271,6 +271,12 @@ Xvfb-only input/clipboard test; never run that fixture against a user's real des
 
 ## 10. Contributing
 
+- This fork develops and releases its own code on `main`. Keep upstream attribution and history.
+  Prepare contributions to VallierDev in a separate focused branch; do not treat `main` as an untouched upstream mirror.
+- Fork releases use `v<upstream-version>-aic.<number>` while integration issues remain open, and are marked prerelease.
+  Document unresolved official-client behavior explicitly; local PTY/VTE checks do not establish client acceptance.
+  Release downloads and container publishing must target this fork, never the upstream owner's namespace.
+
 - Run `cargo test` (and the feature builds you touched) before committing; keep commits focused.
 - New protocol behavior: cite the evidence (observed field numbers, official log strings) in a comment.
 - Update README.md / README.en.md when user-visible features or limitations change, and add
