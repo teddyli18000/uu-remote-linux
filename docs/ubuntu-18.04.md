@@ -79,6 +79,8 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 同日将修复 `fcbc353` 安装到车端独立 release 目录，保留上一版 `ec23703` 供回退，沿用现有配置与自启服务。安装文件和运行中进程的 SHA256 均为 `b14bef91fbeaae498fe15f3efcc9b81619a6bcb1a929cb728c13a03d96d2a902`，车端 `ldd` 无缺失；重启后服务 enabled/running、NRestarts=0、云端 ready、SSH 正常。尚待用户用官方 Windows 客户端验收目标终止及另一会话继续工作。
 
+后续官方 Windows 实测未通过：用户反馈点击“终止”后列表条目仍保留。对应车端首次 KILL_REQ 后目标 shell 立即退出，之后客户端重复发送同一目标的 KILL_REQ；当次检查目标进程已不在，UU 服务仍 running、NRestarts=0，未发现 BINARY 发送失败日志。这证明进程终止生效，但不能证明客户端处理了 KILL_RESP，列表残留原因尚未确定。`8721eeb` 增加管理应答入队/成功交给 WebRTC 的元数据日志（类型、编号、字节数、入队布尔值，无终端内容），Ubuntu 18.04 release 单测仍为 191 passed、0 failed、6 ignored，release 构建通过。该诊断版上传时车端 SSH 连续超时，尚未安装；车端最后确认运行的仍为 `fcbc353`。
+
 ## 车端部署步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
