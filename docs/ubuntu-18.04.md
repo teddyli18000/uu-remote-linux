@@ -103,7 +103,11 @@ WSL 的 `484f7df` 在先开终端的连接上收到 SimpleAction 4 `capture_desk
 
 这次终端 offer 已包含 audio `sendrecv` 和 video `recvonly`，应答保留媒体段，视频轨道确认 `h264=true`。`main` 现按后续 action 4 请求，由 room loop 仲裁同一 peer 的桌面能力，维护输入所有权并启动一次现有音视频、初始化、剪贴板及光标路径。音频 sender 和可用编码在初次 SDP 时预先协商，媒体采集等桌面激活后才开始；未升级的工具连接不抢输入。过期请求在关闭旧桌面前拒绝，headless 或无可用采集/Portal manager 时拒绝升级，Portal 继续沿用授权和锁屏门控。
 
-Ubuntu 18.04 release 测试 193 passed、0 failed、6 ignored，构建通过。新增真实 local SCTP 测试覆盖 action 4 请求前原输入所有者不变、仲裁后目标获得租约、文件连接继续应答及重复激活幂等；该测试不包含实际媒体画面。桌面优先的路径已由用户确认桌面与终端同时正常，终端优先路径仍待新版的 Windows 界面验收。
+Ubuntu 18.04 release 测试 193 passed、0 failed、6 ignored，构建通过。新增真实 local SCTP 测试覆盖 action 4 请求前原输入所有者不变、仲裁后目标获得租约、文件连接继续应答及重复激活幂等；该测试不包含实际媒体画面。
+
+`5eeb7d9` 已完成 WSL 的 Windows 界面验收：从设备列表先开终端并创建会话，再保持连接打开桌面，用户确认画面、鼠标与原 Windows 终端命令输入正常。初报的键盘无反应仅发生在本机 `UU Remote Terminal` 可视化窗口；该窗口由 `vte_terminal_set_input_enabled(..., FALSE)` 明确禁用输入，属于既有只读约定，不是桌面升级后丢失键盘事件。日志也确认收到桌面键盘事件且 X11 注入返回成功；本次未另行验证普通桌面输入框。
+
+运行中二进制 SHA256 为 `36de7df45db7f69a321d8ebbb48b983dfecca6d45cbba518da9fd5ca736cc936`，对应提交的 GitHub CI 通过。此前桌面优先的路径已由用户确认桌面与终端同时正常。这些结果仍仅覆盖 WSL X11、CPU H.264、禁用音频的测试设置；车端和 `aic.1` 发布包未更新。
 
 ## 车端部署步骤
 
