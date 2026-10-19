@@ -121,6 +121,8 @@ WSL 结果不能证明车端 Intel 硬件编码、真实音频设备、GNOME/Xau
 
 ## 一次性环境
 
+2026-10-20，按用户要求已注销 `uu-bionic-test`，其 `F:\Virtual\uu-bionic-test` 磁盘及发行版内测试配置一并销毁。本次生成的 `F:\Virtual` 下 UU 下载、输出、旧发布包、脚本和日志，以及项目 `target/` 缓存均已清理；保留项目源码、已提交的验收图片、用户原始需求文件和其他发行版/虚拟机。以下为当时环境的重建参考，不表示该发行版仍存在。`v0.2.12-aic.2` 发布包改由 GitHub Release 工作流从 tag 构建。
+
 本机新建发行版名 `uu-bionic-test`，安装目录 `F:\Virtual\uu-bionic-test`。未改默认发行版、现有发行版或全局 `.wslconfig`。
 
 Rootfs 来源：[Canonical Bionic core archive](https://partner-images.canonical.com/core/bionic/current/)，文件 `ubuntu-bionic-core-cloudimg-amd64-root.tar.gz`，与同目录 SHA256SUMS 校验一致：

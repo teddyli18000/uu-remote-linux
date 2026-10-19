@@ -4,8 +4,8 @@
 
 > **This is the AIC personal fork of [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux).**
 > Our development and releases use `main`; upstream contributions use separate focused branches. Download from [this fork's Releases](https://github.com/teddyli18000/uu-remote-linux/releases).
-> `v0.2.12-aic.1` is a prerelease with Ubuntu 18.04 GTK/VTE support and a local view of existing terminal sessions. Windows desktop/terminal connection conflicts and session-list updates after termination remain under investigation; see the [release notes](docs/release-notes/v0.2.12-aic.1.md).
-> On `main`, WSL checks now cover list refresh, remote termination, ending the corresponding session by closing its local window, and opening the terminal before the desktop. See the [compatibility and acceptance record](docs/ubuntu-18.04.md). The local terminal view is read-only; enter commands through the Windows UU terminal. These changes are not in the `aic.1` release package.
+> `v0.2.12-aic.2` is a prerelease retaining Ubuntu 18.04 GTK/VTE support, fixing session-list refresh, and enabling desktop on an existing terminal connection; see the [release notes](docs/release-notes/v0.2.12-aic.2.md).
+> WSL checks cover list refresh, remote termination, ending the corresponding session by closing its local window, and opening the terminal before the desktop. See the [compatibility and acceptance record](docs/ubuntu-18.04.md). The local terminal view is read-only; enter commands through the Windows UU terminal. Vehicle deployment and acceptance remain separate.
 > Our prerelease publishes tarballs only; Docker images are planned for stable releases.
 > Upstream descriptions and attribution are retained below; their validation records do not establish acceptance of this fork.
 

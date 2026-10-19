@@ -4,8 +4,8 @@
 
 > **本仓库是 [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux) 的 AIC 自用 fork。**
 > 日常开发与自有发布使用 `main`，向上游贡献使用独立分支。下载见[本 fork Releases](https://github.com/teddyli18000/uu-remote-linux/releases)。
-> 当前 `v0.2.12-aic.1` 为预发布：支持 Ubuntu 18.04 的 GTK/VTE 和同会话可视化终端；Windows 端桌面/终端连接冲突及终止后的列表同步仍在排查，详见[发布说明](docs/release-notes/v0.2.12-aic.1.md)。
-> `main` 已在 WSL 验证列表刷新、远端终止、关闭本地窗口结束对应会话，以及先开终端再开桌面，详见[兼容与验收记录](docs/ubuntu-18.04.md)。本地可视化终端只读，命令从 Windows 的 UU 终端输入。这些更新尚未包含在 `aic.1` 发布包中。
+> 当前 `v0.2.12-aic.2` 为预发布：保留 Ubuntu 18.04 GTK/VTE，修复会话列表刷新，并支持在已有终端连接上启用桌面，详见[发布说明](docs/release-notes/v0.2.12-aic.2.md)。
+> 已在 WSL 验证列表刷新、远端终止、关闭本地窗口结束对应会话，以及先开终端再开桌面，详见[兼容与验收记录](docs/ubuntu-18.04.md)。本地可视化终端只读，命令从 Windows 的 UU 终端输入。车端仍需单独部署验收。
 > 本 fork 预发布仅提供 tar 包；Docker 镜像在后续稳定版发布。
 > 以下保留上游功能说明与署名；上游验证记录不代表本 fork 已完成全部实测。
 
