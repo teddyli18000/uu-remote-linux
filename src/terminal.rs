@@ -197,6 +197,14 @@ fn registry() -> &'static Mutex<HashMap<u32, Arc<Session>>> {
 }
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
+fn session_changes() -> &'static tokio::sync::watch::Sender<()> {
+    static CHANGES: OnceLock<tokio::sync::watch::Sender<()>> = OnceLock::new();
+    CHANGES.get_or_init(|| tokio::sync::watch::channel(()).0)
+}
+
+pub fn subscribe_session_changes() -> tokio::sync::watch::Receiver<()> { session_changes().subscribe() }
+fn sessions_changed() { session_changes().send_replace(()); }
+
 fn now_ms() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 
 fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result<Arc<Session>, String> {
@@ -254,6 +262,7 @@ fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result
         log::info!("Terminal session exited: id={} exit_code={}", worker.id, code);
         worker.emit(EXIT, serde_json::json!({"exit_code": code}).to_string().as_bytes());
         registry().lock().unwrap().remove(&worker.id);
+        sessions_changed();
     }).map_err(|e| format!("reader thread failed: {e}"))?;
     registry().lock().unwrap().insert(id, session.clone());
     log::info!("Terminal session spawned: id={} cols={} rows={}", id, cols, rows);
@@ -340,6 +349,7 @@ impl TerminalConn {
                         s.ensure_view();
                         // The replay tail starts mid-redraw for full-screen programs.
                         if reattach { s.force_redraw(); }
+                        sessions_changed();
                     }
                     Err(e) => { log::warn!("Terminal open failed: {}", e); self.send(OPEN_RESP, frame.session, &reply(1, &e)); }
                 }
@@ -348,7 +358,7 @@ impl TerminalConn {
             RESIZE => if let Some(s) = existing { let (c, r) = dims(&json(&frame.payload)); s.resize(c, r) },
             SIGNAL => if let Some(s) = existing { s.signal(signal_number(&frame.payload)) },
             CLOSE => if let Some(s) = existing { *s.sink.lock().unwrap() = None; s.signal(libc::SIGHUP); },
-            DETACH => if let Some(s) = existing { *s.sink.lock().unwrap() = None },
+            DETACH => if let Some(s) = existing { *s.sink.lock().unwrap() = None; sessions_changed(); },
             KILL_REQ => {
                 // Windows 4.43 terminal_management_model sends a request ID in the header,
                 // and the target session_id in JSON. Empty payloads retain legacy header targeting.

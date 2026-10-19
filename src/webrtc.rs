@@ -539,6 +539,24 @@ impl WebRtcSession {
                 } else { None };
                 // CT_TERMINAL: TERM frames and terminal RPCs (check_env/rename) on BINARY.
                 let terminal_conn = if label == "BINARY_DATA_CHANNEL" {
+                    // uu-cli PR #1 (4193a3d), docs/terminal.md section 4: Message field 28 is
+                    // an empty TerminalSessionChanged notification, separate from TERM replies.
+                    // Broadcast only after registry/state updates so a subsequent LIST sees them.
+                    let mut changes = crate::terminal::subscribe_session_changes();
+                    let notifications = outbound.clone();
+                    let sequence = out_sequence.clone();
+                    let notifier = tokio::spawn(async move {
+                        while changes.changed().await.is_ok() {
+                            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                            if notifications.send(crate::initialization::envelope(sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed), ts, 28, &[])).is_err() { break; }
+                            log::info!("Terminal session change notification queued: field=28");
+                        }
+                    });
+                    let stop_notifier = notifier.abort_handle();
+                    d.on_close(Box::new(move || {
+                        stop_notifier.abort();
+                        Box::pin(async {})
+                    }));
                     Some(Arc::new(crate::terminal::TerminalConn::new(outbound.clone())))
                 } else { None };
                 if label == "CONTROL_DATA_CHANNEL" || label == "TEXT_DATA_CHANNEL" {

@@ -81,6 +81,14 @@ UTF-8 locale 是 GTK Unicode 剪贴板探针的前提；`LC_ALL=C` 会使该探�
 
 后续官方 Windows 实测未通过：用户反馈点击“终止”后列表条目仍保留。对应车端首次 KILL_REQ 后目标 shell 立即退出，之后客户端重复发送同一目标的 KILL_REQ；当次检查目标进程已不在，UU 服务仍 running、NRestarts=0，未发现 BINARY 发送失败日志。这证明进程终止生效，但不能证明客户端处理了 KILL_RESP，列表残留原因尚未确定。`8721eeb` 增加管理应答入队/成功交给 WebRTC 的元数据日志（类型、编号、字节数、入队布尔值，无终端内容），Ubuntu 18.04 release 单测仍为 191 passed、0 failed、6 ignored，release 构建通过。该诊断版上传时车端 SSH 连续超时，尚未安装；车端最后确认运行的仍为 `fcbc353`。
 
+## WSL Windows 会话列表刷新诊断
+
+`v0.2.12-aic.1` 在独立 WSL 测试设备上复现：先打开桌面，再打开终端，两者可同时使用，终端复用了桌面连接。初次 LIST 返回空数组后，创建两个会话、DETACH 一个会话均未收到新的 LIST；用户界面一直显示空列表。这一结果不代表独立终端连接与桌面连接的冲突已经修复。
+
+依据 [uu-cli PR #1](https://github.com/teddyli18000/uu-cli/pull/1) 的 `4193a3d` 协议说明，测试实现增加空 `Message` 字段 28 `TerminalSessionChanged`：在 OPEN/重附着、DETACH、实际退出并移除 registry 条目后广播变化。每个 BINARY 通道订阅变化，通过已有顺序应答队列发出通知；关闭通道时取消订阅任务。通知不携带终端内容，KILL 应答及连接替换逻辑不变。
+
+此通知的客户端刷新效果及 BINARY 通道路由仍待官方 Windows 客户端实测，不能仅凭空消息的协议定义认定修复成功。测试构建在 Ubuntu 18.04 上通过 release 测试（191 passed、0 failed、6 ignored）和构建，仅在 WSL 重启运行；车端未更新。
+
 ## 车端部署步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
