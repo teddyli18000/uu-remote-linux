@@ -13,6 +13,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc::UnboundedSender;
 
+#[path = "terminal_view.rs"]
+mod terminal_view;
+#[path = "terminal_acceptance.rs"]
+mod acceptance_probe;
+
+pub use acceptance_probe::acceptance;
+
 pub const OPEN: u8 = 1;
 pub const STDIN: u8 = 2;
 pub const RESIZE: u8 = 3;
@@ -72,11 +79,12 @@ struct Session {
     sink: Mutex<Option<UnboundedSender<Vec<u8>>>>,
     scrollback: Mutex<VecDeque<u8>>,
     size: Mutex<(u16, u16)>,
+    view: Mutex<Option<terminal_view::View>>,
 }
 
 impl Session {
-    /// Lock order sink → scrollback matches OPEN, so a reattach snapshot sees each
-    /// chunk either in the replay or live, never both.
+    /// Lock order sink → scrollback → view matches OPEN/ensure_view. Holding the sink lock through
+    /// the view fanout makes a chunk appear in replay or live output, never both.
     fn record_output(&self, data: &[u8]) {
         let mut sink = self.sink.lock().unwrap();
         {
@@ -88,6 +96,38 @@ impl Session {
         if let Some(tx) = sink.as_ref() {
             if tx.send(encode(STDOUT, self.id, data)).is_err() { *sink = None; }
         }
+        let mut view = self.view.lock().unwrap();
+        let Some(current) = view.as_ref() else { return };
+        if let Err(error) = current.output(data) {
+            let reason = match error {
+                terminal_view::SendError::QueueFull => "queue_full",
+                terminal_view::SendError::Closed => "writer_closed",
+                terminal_view::SendError::Oversized => "oversized_frame",
+                terminal_view::SendError::InvalidCheck => "invalid_check",
+            };
+            if let Some(mut old) = view.take() { old.close_window(); }
+            log::warn!("Terminal local view dropped: session={} reason={}", self.id, reason);
+        }
+    }
+    /// Serialize snapshot/install against record_output, so output is replayed or live, never both.
+    fn ensure_view(&self) {
+        if !terminal_view::available() { let _ = terminal_view::spawn(self.id, 80, 24); return; }
+        let _sink = self.sink.lock().unwrap();
+        let size = self.size.lock().unwrap();
+        let scrollback = self.scrollback.lock().unwrap();
+        let mut view = self.view.lock().unwrap();
+        if view.as_mut().is_some_and(terminal_view::View::is_alive) { return; }
+        if let Some(mut old) = view.take() { old.close_window(); }
+        let Some(mut next) = terminal_view::spawn(self.id, size.0, size.1) else { return };
+        let replay: Vec<u8> = scrollback.iter().copied().collect();
+        for chunk in replay.chunks(OUTPUT_CHUNK) {
+            if next.output(chunk).is_err() {
+                next.close_window();
+                log::warn!("Terminal local view dropped: session={} reason=replay_queue_full", self.id);
+                return;
+            }
+        }
+        *view = Some(next);
     }
     fn emit(&self, kind: u8, payload: &[u8]) -> bool {
         let mut sink = self.sink.lock().unwrap();
@@ -102,6 +142,21 @@ impl Session {
         let mut size = self.size.lock().unwrap();
         *size = (cols, rows);
         self.set_winsize(cols, rows);
+        self.view_resize(cols, rows);
+    }
+    fn view_resize(&self, cols: u16, rows: u16) {
+        let mut view = self.view.lock().unwrap();
+        let Some(current) = view.as_ref() else { return };
+        if let Err(error) = current.resize(cols, rows) {
+            let reason = match error {
+                terminal_view::SendError::QueueFull => "queue_full",
+                terminal_view::SendError::Closed => "writer_closed",
+                terminal_view::SendError::Oversized => "oversized_frame",
+                terminal_view::SendError::InvalidCheck => "invalid_check",
+            };
+            if let Some(mut old) = view.take() { old.close_window(); }
+            log::warn!("Terminal local view dropped: session={} reason={}", self.id, reason);
+        }
     }
     fn set_winsize(&self, cols: u16, rows: u16) {
         let win = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
@@ -173,7 +228,8 @@ fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result
         }
     };
     let session = Arc::new(Session { id, shell: shell.clone(), created_ms: now_ms(), pid: child.id() as i32,
-        master: pty.master, sink: Mutex::new(None), scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((cols, rows)) });
+        master: pty.master, sink: Mutex::new(None), scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((cols, rows)),
+        view: Mutex::new(terminal_view::spawn(id, cols, rows)) });
     let mut reader = std::fs::File::from(session.master.try_clone().map_err(|e| format!("pty dup failed: {e}"))?);
     let worker = session.clone();
     std::thread::Builder::new().name(format!("uu-term-{id}")).spawn(move || {
@@ -198,7 +254,10 @@ fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result
 /// makes systemd wait for its stop timeout). Called when the server shuts down.
 pub fn shutdown_all() {
     let sessions: Vec<Arc<Session>> = registry().lock().unwrap().values().cloned().collect();
-    for s in &sessions { s.signal(libc::SIGHUP); }
+    for s in &sessions {
+        s.signal(libc::SIGHUP);
+        if let Some(mut view) = s.view.lock().unwrap().take() { view.close_window(); }
+    }
     if !sessions.is_empty() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         for s in &sessions { s.signal(libc::SIGKILL); }
@@ -228,6 +287,11 @@ fn reply(code: i64, message: &str) -> Vec<u8> { serde_json::json!({"code": code,
 /// One viewer connection's terminal endpoint; `out` sends complete frames on BINARY_DATA_CHANNEL.
 pub struct TerminalConn { out: UnboundedSender<Vec<u8>> }
 
+/// Runs the read-only VTE helper requested by the private `__terminal-view` subcommand.
+pub fn run_view_helper(session_id: u32, cols: u16, rows: u16) {
+    terminal_view::run_helper(session_id, cols, rows);
+}
+
 impl TerminalConn {
     pub fn new(out: UnboundedSender<Vec<u8>>) -> Self { Self { out } }
     fn send(&self, kind: u8, session: u32, payload: &[u8]) { let _ = self.out.send(encode(kind, session, payload)); }
@@ -255,6 +319,7 @@ impl TerminalConn {
                         // A full scrollback exceeds SCTP's 64 KiB outbound message limit.
                         for chunk in replay.chunks(OUTPUT_CHUNK) { self.send(STDOUT, s.id, chunk); }
                         drop(sink);
+                        s.ensure_view();
                         // The replay tail starts mid-redraw for full-screen programs.
                         if reattach { s.force_redraw(); }
                     }
@@ -327,7 +392,7 @@ mod tests {
         let pty = nix::pty::openpty(None, None).unwrap();
         let session = Arc::new(Session { id: u32::MAX - 2, shell: "/bin/sh".into(), created_ms: now_ms(),
             master: pty.master, pid: 0, sink: Mutex::new(None),
-            scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((80, 24)) });
+            scrollback: Mutex::new(VecDeque::new()), size: Mutex::new((80, 24)), view: Mutex::new(None) });
         let rows = |s: &Session| {
             let mut win = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
             unsafe { libc::ioctl(s.master.as_raw_fd(), libc::TIOCGWINSZ as _, &mut win); }
@@ -347,7 +412,7 @@ mod tests {
         let history: Vec<u8> = (0..SCROLLBACK).map(|n| (n % 251) as u8).collect();
         let session = Arc::new(Session { id, shell: "/bin/sh".into(), created_ms: now_ms(),
             master: pty.master, pid: 0, sink: Mutex::new(None),
-            scrollback: Mutex::new(history.iter().copied().collect()), size: Mutex::new((80, 24)) });
+            scrollback: Mutex::new(history.iter().copied().collect()), size: Mutex::new((80, 24)), view: Mutex::new(None) });
         registry().lock().unwrap().insert(id, session.clone());
         struct Cleanup(u32);
         impl Drop for Cleanup { fn drop(&mut self) { registry().lock().unwrap().remove(&self.0); } }

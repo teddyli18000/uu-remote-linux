@@ -7,7 +7,7 @@ LABEL org.opencontainers.image.source="https://github.com/VallierDev/uu-remote-l
       org.opencontainers.image.licenses="GPL-3.0"
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl bash libx11-6 libxext6 libxtst6 libxfixes3 libgtk-3-0 \
+      ca-certificates curl bash libx11-6 libxext6 libxtst6 libxfixes3 libgtk-3-0 libvte-2.91-0 \
  && cd /tmp \
  && base="https://github.com/VallierDev/uu-remote-linux/releases/download/${VERSION}/uu-remote-linux-${VERSION}-x86_64-linux.tar.gz" \
  && curl -fsSLO "$base" && curl -fsSLO "$base.sha256" && sha256sum -c "uu-remote-linux-${VERSION}-x86_64-linux.tar.gz.sha256" \

@@ -125,7 +125,7 @@ mapping and hardware acceleration remain unverified. This is not zero-copy VAAPI
 ```sh
 sudo apt install build-essential pkg-config \
     libx11-dev libxext-dev libxtst-dev libxfixes-dev \
-    libgtk-3-dev ffmpeg
+    libgtk-3-dev libvte-2.91-dev ffmpeg
 # optional: Wayland backend
 sudo apt install libwayland-dev libxkbcommon-dev wl-clipboard
 # optional: GNOME/KDE portal backend
@@ -135,6 +135,12 @@ sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 - A Rust toolchain is required (<https://rustup.rs>).
 - `libgtk-3-dev` is optional. Without GTK, login works with a QR code in the terminal (`UU_NO_GTK=1` disables
   the login window explicitly).
+- `libvte-2.91-dev` enables a local read-only window for each existing UU Terminal PTY session. Disconnects
+  keep the shell/window alive; reconnects reuse it. Closing the local window does not end the shell. The
+  remote client controls terminal dimensions. Without VTE or a display the remote terminal remains available.
+  The additional runtime package is `libvte-2.91-0`.
+- For Ubuntu 18.04 X11 builds, validation limits and deployment steps, see the [Bionic guide](docs/ubuntu-18.04.md)
+  (Chinese). Build inside an 18.04 userspace; binaries released from newer distributions need newer glibc.
 - On NVIDIA GPUs use an FFmpeg build with `h264_nvenc`; otherwise the CPU encoder (libx264) is used.
 
 ### 2. Build

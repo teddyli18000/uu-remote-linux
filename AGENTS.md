@@ -37,7 +37,7 @@ Dependencies (Ubuntu/Debian):
 
 ```sh
 sudo apt install build-essential pkg-config \
-    libx11-dev libxext-dev libxtst-dev libxfixes-dev libavcodec-dev libavformat-dev libavdevice-dev libswscale-dev libclang-dev libgtk-3-dev ffmpeg
+    libx11-dev libxext-dev libxtst-dev libxfixes-dev libavcodec-dev libavformat-dev libavdevice-dev libswscale-dev libclang-dev libgtk-3-dev libvte-2.91-dev ffmpeg
 # --features inproc-av:      libavcodec-dev libavformat-dev libavdevice-dev libswscale-dev libclang-dev
 #                            (FFmpeg 6.x; in-process capture/encoding, Ubuntu 24.04 ships it)
 # --features wayland:        libwayland-dev libxkbcommon-dev wl-clipboard
@@ -56,6 +56,9 @@ cargo build --release --features native-viewer,viewer-sdl --bin uuremote-viewer 
 
 - `build.rs` links X11/Xext/Xtst/Xfixes and `dl` (PAM is loaded at runtime with `dlopen`), and builds the GTK3
   login window only when `pkg-config gtk+-3.0` succeeds (`UU_NO_GTK=1` forces it off).
+- `pkg-config vte-2.91` additionally enables a read-only local view of each existing Terminal PTY.
+  GTK stays in a renderer subprocess; keep a single PTY reader and the remote-controlled grid dimensions.
+  Ubuntu 18.04 default X11 builds retain GTK/VTE with system libraries; see `docs/ubuntu-18.04.md`.
 - The portal feature panics in `build.rs` if GIO/PipeWire development packages are missing.
 - `vendor/webrtc-dtls` is a patched copy of the upstream crate (MIT/Apache); keep it as a path dependency.
 - CI (`.github/workflows/ci.yml`) runs `cargo test --locked` on ubuntu-22.04. Pushing a `v*` tag runs
@@ -138,6 +141,7 @@ every 60 s.
 | `src/clipboard*.rs` | text clipboard bridge and protocol |
 | `src/file_trans.rs` | FileTransferFtp RPC |
 | `src/terminal.rs` | TERM frames + PTY sessions |
+| `src/terminal_view.rs`, `c_engine/terminal_view.c` | Same-session local VTE view; helper never starts a shell or injects input |
 | `src/session_lock.rs`, `c_engine/pam_check.c` | lock state reporting, auto unlock via PAM + logind |
 | `src/system_actions.rs`, `src/system_metrics.rs` | SimpleAction system commands, mute, auto-lock, SystemMetrics |
 | `src/initialization.rs`, `src/control_protocol.rs`, `src/protocol.rs` | protobuf encoders/decoders for CONTROL |
@@ -154,6 +158,10 @@ Diagnostic subcommands: `login [--no-gui]`, `unlock-check` (password on stdin, p
 `desktop-probe [new.png]`, `desktop-video-probe` (`UU_PROBE_FPS`, `UU_PROBE_FRAMES`, `UU_PROBE_QUALITY` 1-5 = viewer bitrate preset, 5 auto; `UU_PROBE_INPUT` fixed video/image sequence, `UU_PROBE_LOOP=1` repeats), `wayland-input-probe`, `clipboard-acceptance`,
 `portal-acceptance`, `help`. Unknown arguments exit with code 2. Builds up to v0.1.0 did **not** reject them and
 started a second full host server instead, so check that a subcommand exists in the binary you run.
+
+`terminal-acceptance` exercises real local PTYs and VTE with synthetic data, without a cloud account.
+It is a local diagnostic, not official-client acceptance. `src/x11_acceptance.rs` contains an opt-in
+Xvfb-only input/clipboard test; never run that fixture against a user's real desktop.
 
 ## 7. Protocol facts (verified against the official clients)
 

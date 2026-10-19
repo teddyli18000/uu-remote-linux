@@ -30,6 +30,8 @@ mod video_track;
 mod locked_video;
 #[cfg(test)]
 mod test_network;
+#[cfg(test)]
+mod x11_acceptance;
 mod hevc;
 #[cfg(feature = "inproc-av")]
 mod damage_capture;
@@ -176,6 +178,13 @@ fn show_running_host() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A local terminal renderer has no cloud/account initialization and never starts a shell.
+    if std::env::args().nth(1).as_deref() == Some("__terminal-view") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        if args.len() != 3 { return Err("invalid terminal view arguments".into()); }
+        terminal::run_view_helper(args[0].parse()?, args[1].parse()?, args[2].parse()?);
+        return Ok(());
+    }
     // Not signed in, with a desktop: one window offers remote assistance (guest identity) and the QR
     // login together; signing in restarts the host in account mode (assistance continues there).
     let unified = std::env::args().nth(1).is_none() && display_present()
@@ -190,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter_module("uuremote_server", log::LevelFilter::Info).init();
     } else { env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init(); }
     // An unknown argument must never fall through to starting a second full host server.
-    const SUBCOMMANDS: [&str; 14] = ["show", "assist", "desktop-input-probe", "virtual-audio-probe", "login", "unlock-check", "desktop-probe", "desktop-video-probe", "desktop-audio-probe", "wayland-capture",
+    const SUBCOMMANDS: [&str; 15] = ["terminal-acceptance", "show", "assist", "desktop-input-probe", "virtual-audio-probe", "login", "unlock-check", "desktop-probe", "desktop-video-probe", "desktop-audio-probe", "wayland-capture",
         "wayland-input-probe", "wayland-text-probe", "clipboard-acceptance", "portal-acceptance"];
     if let Some(arg) = std::env::args().nth(1).filter(|a| !SUBCOMMANDS.contains(&a.as_str())) {
         let usage = format!("usage: uuremote-server [{}]\n  (no argument: run the host)", SUBCOMMANDS.join(" | "));
@@ -200,6 +209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if std::env::args().nth(1).as_deref() == Some("show") { return show_running_host(); }
+    if std::env::args().nth(1).as_deref() == Some("terminal-acceptance") {
+        println!("{}", tokio::task::spawn_blocking(terminal::acceptance).await??);
+        return Ok(());
+    }
     if assist_enabled && !unified {
         if std::env::args().len() > 2 { return Err("assist accepts no additional arguments; configure it with a private UU_CONFIG".into()); }
         assist::configure()?;

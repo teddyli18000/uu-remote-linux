@@ -263,4 +263,57 @@ mod tests {
         let syn = frame(&key, SYN, b"");
         assert!(!decode_wire(&syn).unwrap().iter().any(|f| f.number == 4 || f.number == 5));
     }
+
+    fn inject(session: &Arc<Session>, key: &Key, kind: u64, payload: &[u8]) {
+        let raw = frame(key, kind, payload);
+        let message = [WireField { number: MESSAGE_FIELD, value: WireValue::Bytes(&raw) }];
+        assert!(session.handle(&message, "FILE_DATA_CHANNEL"));
+    }
+
+    #[tokio::test]
+    async fn loopback_syn_data_and_fin_use_one_tcp_stream() {
+        const WAIT: Duration = Duration::from_secs(3);
+        struct Shutdown(Arc<Session>);
+        impl Drop for Shutdown { fn drop(&mut self) { self.0.shutdown(); } }
+
+        let listener = tokio::time::timeout(WAIT, tokio::net::TcpListener::bind(("127.0.0.1", 0))).await.unwrap().unwrap();
+        let address = listener.local_addr().unwrap();
+        let (outbound, mut received) = mpsc::channel(16);
+        let session = Arc::new(Session { outbound, streams: Mutex::new(HashMap::new()) });
+        let _shutdown = Shutdown(session.clone());
+        let key = Key { session: Id::Varint(1), rule: Id::Varint(2), stream: Id::Varint(3) };
+        let syn = serde_json::json!({"version": 1, "target_host": "127.0.0.1", "target_port": address.port()}).to_string();
+        inject(&session, &key, SYN, syn.as_bytes());
+
+        let (ack_key, kind, ack) = tokio::time::timeout(WAIT, received.recv()).await.unwrap().unwrap();
+        assert_eq!(ack_key, key);
+        assert_eq!(kind, SYN_ACK);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&ack).unwrap()["ok"], true);
+        let (mut target, _) = tokio::time::timeout(WAIT, listener.accept()).await.unwrap().unwrap();
+
+        let incoming = b"synthetic-viewer-bytes";
+        inject(&session, &key, DATA, incoming);
+        let mut got = vec![0; incoming.len()];
+        tokio::time::timeout(WAIT, target.read_exact(&mut got)).await.unwrap().unwrap();
+        assert!(got == incoming, "DATA did not reach the local target");
+
+        let reply = b"synthetic-target-bytes";
+        tokio::time::timeout(WAIT, target.write_all(reply)).await.unwrap().unwrap();
+        let received_reply = tokio::time::timeout(WAIT, async {
+            let mut data = Vec::new();
+            while data.len() < reply.len() {
+                let (reply_key, kind, chunk) = received.recv().await.expect("outbound channel closed");
+                assert_eq!(reply_key, key);
+                assert_eq!(kind, DATA);
+                data.extend_from_slice(&chunk);
+            }
+            data
+        }).await.unwrap();
+        assert!(received_reply == reply, "target DATA did not reach the outbound queue");
+
+        inject(&session, &key, FIN, &[]);
+        let mut eof = [0];
+        assert_eq!(tokio::time::timeout(WAIT, target.read(&mut eof)).await.unwrap().unwrap(), 0);
+        assert!(!session.streams.lock().unwrap().contains_key(&key));
+    }
 }

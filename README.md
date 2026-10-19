@@ -110,7 +110,7 @@ GNOME Portal 的控制通道不再等待授权窗口或第一帧画面：先通�
 ```sh
 sudo apt install build-essential pkg-config \
     libx11-dev libxext-dev libxtst-dev libxfixes-dev \
-    libgtk-3-dev ffmpeg
+    libgtk-3-dev libvte-2.91-dev ffmpeg
 # 可选：Wayland 后端
 sudo apt install libwayland-dev libxkbcommon-dev wl-clipboard
 # 可选：GNOME/KDE portal 后端
@@ -119,6 +119,8 @@ sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 
 - 需要 Rust 工具链（<https://rustup.rs>）。
 - `libgtk-3-dev` 是可选的：没有 GTK 时只能在终端里扫码登录（也可以设置 `UU_NO_GTK=1` 主动关闭登录窗口）。
+- `libvte-2.91-dev` 启用本机终端视图：每个 UU Terminal session 在被控端桌面显示同一 PTY 的输出，断线保留，重连复用；关闭本机窗口不会结束 shell。远端决定终端尺寸。本机视图只读，缺少 VTE 或图形显示时保留原远程终端能力。运行库为 `libvte-2.91-0`。
+- Ubuntu 18.04 默认 X11 构建、验证范围及部署步骤见 [18.04 说明](docs/ubuntu-18.04.md)。请在 18.04 用户空间构建，不要直接使用较新系统的发布二进制。
 - NVIDIA 显卡用户需要使用带 `h264_nvenc` 的 FFmpeg，否则自动回落到 CPU 编码（libx264）。
 
 ### 2. 编译

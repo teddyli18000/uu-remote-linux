@@ -3,11 +3,13 @@ fn main() {
     println!("cargo:rerun-if-changed=c_engine/x11_engine.c");
     println!("cargo:rerun-if-changed=c_engine/clipboard.c");
     println!("cargo:rerun-if-changed=c_engine/assist_window.c");
+    println!("cargo:rerun-if-changed=c_engine/terminal_view.c");
     println!("cargo:rerun-if-changed=c_engine/viewer_window.c");
     println!("cargo:rerun-if-changed=c_engine/viewer_tools.c");
     println!("cargo:rerun-if-changed=c_engine/pam_check.c");
     println!("cargo:rerun-if-env-changed=UU_NO_GTK");
     println!("cargo:rustc-check-cfg=cfg(uu_gtk)");
+    println!("cargo:rustc-check-cfg=cfg(uu_terminal_view)");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "linux" {
@@ -49,6 +51,26 @@ fn main() {
                 println!("cargo:rustc-cfg=uu_gtk");
             }
             None => println!("cargo:warning=gtk+-3.0 not found: building without the login window"),
+        }
+        if std::env::var_os("UU_NO_GTK").is_none() {
+            let vte = |arg: &str| std::process::Command::new("pkg-config")
+                .args([arg, "gtk+-3.0", "vte-2.91"]).output().ok()
+                .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            match vte("--cflags").zip(vte("--libs")) {
+                Some((cflags, libs)) => {
+                    let mut build = cc::Build::new();
+                    build.file("c_engine/terminal_view.c").flag_if_supported("-Wno-deprecated-declarations");
+                    for flag in cflags.split_whitespace() { build.flag(flag); }
+                    build.compile("uu_terminal_view");
+                    for flag in libs.split_whitespace() {
+                        if let Some(lib) = flag.strip_prefix("-l") { println!("cargo:rustc-link-lib={lib}"); }
+                        else if let Some(dir) = flag.strip_prefix("-L") { println!("cargo:rustc-link-search=native={dir}"); }
+                    }
+                    println!("cargo:rustc-link-lib=pthread");
+                    println!("cargo:rustc-cfg=uu_terminal_view");
+                }
+                None => println!("cargo:warning=vte-2.91 not found: building without the local terminal view"),
+            }
         }
         if std::env::var_os("CARGO_FEATURE_PORTAL").is_some() {
             println!("cargo:rerun-if-changed=c_engine/portal_engine.c");
