@@ -296,6 +296,16 @@ pub fn acceptance() -> Result<String, String> {
         keep_view: id,
     };
     let (first_view_pid, first_view) = wait_for_view(&session, std::time::Duration::from_secs(8))?;
+    for fd in std::fs::read_dir(format!("/proc/{first_view_pid}/fd"))
+        .map_err(|_| "could not inspect renderer descriptors")?
+    {
+        let path = fd.map_err(|_| "could not inspect renderer descriptor")?.path();
+        if let Ok(target) = std::fs::read_link(path) {
+            if target == std::path::Path::new("/dev/ptmx") || target.starts_with("/dev/pts") {
+                return Err("renderer inherited a session PTY descriptor".into());
+            }
+        }
+    }
     let shell_pid = session.pid;
 
     let first_command = concat!(

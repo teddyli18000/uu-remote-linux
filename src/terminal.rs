@@ -200,6 +200,12 @@ fn spawn(requested_id: u32, cols: u16, rows: u16, shell: Option<&str>) -> Result
     use std::os::unix::process::CommandExt;
     let win = nix::pty::Winsize { ws_row: rows.max(1), ws_col: cols.max(1), ws_xpixel: 0, ws_ypixel: 0 };
     let pty = nix::pty::openpty(Some(&win), None).map_err(|e| format!("openpty failed: {e}"))?;
+    // The renderer receives only the output pipe; do not let it retain this or other sessions' PTYs.
+    for fd in [&pty.master, &pty.slave] {
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(format!("pty close-on-exec failed: {}", std::io::Error::last_os_error()));
+        }
+    }
     let shell = shell.filter(|s| s.starts_with('/') && std::path::Path::new(s).exists()).map(str::to_owned)
         .or_else(|| std::env::var("SHELL").ok().filter(|s| std::path::Path::new(s).exists()))
         .unwrap_or_else(|| "/bin/bash".into());
