@@ -570,6 +570,7 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut failures = 0u32;
+        let mut output_generation = same_session_display::output_generation();
         loop {
             tokio::select! {
                 _ = shutdown.changed() => return,
@@ -591,20 +592,25 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
                     continue;
                 },
             };
-            if virtual_display::display_config().as_ref()==Some(&config) { continue; }
+            let generation=same_session_display::output_generation();
+            if virtual_display::display_config().as_ref()==Some(&config) && generation==output_generation { continue; }
+            output_generation=generation;
             let mut peers=sessions.lock().await;
-            let desktops: Vec<_>=peers.iter().filter(|(_,peer)|peer.is_desktop()).map(|(id,_)|id.clone()).collect();
-            let ended=!desktops.is_empty();
-            for id in desktops { if let Some(old)=peers.remove(&id) { let _=old.pc.close().await; } }
-            if ended { display_ended.notify_one(); }
-            input.suspend_desktop();
             let separate=!virtual_display::same_session_mode();
-            if !separate {
-                // Keep desktop promotion/offer arbitration behind the peer lock until the
-                // existing root's geometry is refreshed. DISPLAY itself has not changed.
+            if separate {
+                let desktops: Vec<_>=peers.iter().filter(|(_,peer)|peer.is_desktop()).map(|(id,_)|id.clone()).collect();
+                let ended=!desktops.is_empty();
+                for id in desktops { if let Some(old)=peers.remove(&id) { let _=old.pc.close().await; } }
+                if ended { display_ended.notify_one(); }
+                input.suspend_desktop();
+            } else {
+                // Same Xorg: preserve peers and input ownership, refreshing only capture/media.
                 let _=tokio::task::spawn_blocking(crate::capture::x11_resized).await;
             }
             config.activate();
+            if !separate {
+                for peer in peers.values().filter(|peer|peer.is_desktop()) { peer.refresh_desktop_output(); }
+            }
             drop(peers);
             let switched=tokio::task::spawn_blocking(move || {
                 if separate { crate::capture::x11_resized(); }
@@ -613,7 +619,7 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
                 Ok::<_,String>((screen.width,screen.height))
             }).await;
             match switched {
-                Ok(Ok((width,height))) => log::info!("Persistent virtual desktop selected: width={width} height={height}; reconnect desktop viewer"),
+                Ok(Ok((width,height))) => log::info!("Persistent desktop output ready: width={width} height={height} reconnect_required={separate}"),
                 Ok(Err(error)) => log::warn!("Virtual display is running but capture unavailable: {error}"),
                 Err(_) => log::warn!("Virtual display capture worker failed"),
             }

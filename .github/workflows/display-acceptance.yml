@@ -35,7 +35,7 @@ jobs:
               build-essential pkg-config curl ca-certificates xz-utils libtool xutils-dev \
               xserver-xorg-core xserver-xorg-dev xserver-xorg-video-dummy libx11-dev \
               libxtst6 libxfixes3 libvte-2.91-0 ffmpeg xauth x11-utils x11-xserver-utils \
-              xdotool dbus-x11 python3 gnome-session-flashback gnome-panel metacity indicator-applet-complete gnome-backgrounds
+              xdotool dbus-x11 python3 gnome-session ubuntu-session gnome-shell gnome-shell-extension-ubuntu-dock gnome-shell-extension-appindicator gnome-backgrounds libgl1-mesa-dri libgl1-mesa-glx
             sh tests/install_ci_dummy.sh
             mkdir -p /run/dbus
             dbus-daemon --system --fork

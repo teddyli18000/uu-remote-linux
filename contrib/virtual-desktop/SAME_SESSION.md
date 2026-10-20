@@ -1,93 +1,146 @@
-# Ubuntu 18.04 same-session virtual output
+# Same-session display on Ubuntu 18.04
 
-The default X11 path keeps using the existing GNOME Xorg display. When the last physical monitor
-is gone, the host enables an Intel `VIRTUAL1` RandR output on that same display. It does not create
-another X server, copy windows to a new desktop, or run the network-facing host as root.
+The same-session route keeps the existing GNOME Xorg server, desktop, windows, and application
+processes. It does not migrate applications to Xvfb. The current development path is a runtime
+force-on request for one already-existing i915 HDMI connector. The temporary route has passed on the Ubuntu 18.04 / Linux 5.4.0-150 / i915 target: with HDMI unplugged, the official UU client showed the complete original GNOME desktop and accepted window dragging and keyboard input at 1024x768. New-version automatic unplug takeover, persistence across host restart, and monitorless cold boot still require acceptance.
 
-This requires an Intel i915 DRM device, the Intel Xorg DDX (`intel_drv.so` from
-`xserver-xorg-video-intel`), and a GNOME Xorg session. The Xorg `OutputClass` section matches the
-kernel driver and passes options to the matching device; the Intel driver documents `VirtualHeads`
-as extra RandR outputs sharing the regular framebuffer. See [`xorg.conf(5)`](https://manpages.ubuntu.com/manpages/jammy/man5/xorg.conf.5.html)
-and the [upstream Intel driver manual](https://cgit.freedesktop.org/xorg/driver/xf86-video-intel/tree/man/intel.man?id=7538be3315b8683b05e8f6b22023baadcc0bc4da).
+## Scope and limits
 
-## Configure VirtualHeads
+No driver is installed, replaced, or switched, and no Xorg driver configuration or GDM setting is
+changed. Installing the helper does not require a reboot or graphical-session restart. For a
+monitorless cold boot, the optional [systemd oneshot](uuremote-display-helper.service) can run
+`ensure` before `display-manager.service`; it forces only the connector and does not create a GNOME
+user session. GDM must already be set up to start the intended user's Xorg session automatically.
+This feature does not enable automatic login or change GDM. Without that existing session, the
+remote host cannot preserve or serve the original desktop.
 
-Run `check` as the user who owns the current graphical session. It prints only system status,
-driver names, and counts; it does not read or print window titles or application contents.
+On first activation, the helper requires exactly one i915 DRM card and every physical connector to
+have a known `disconnected` status. It selects an existing HDMI-A connector on that card; if the
+card exposes several HDMI-A ports, it deterministically selects the lowest numeric port. A
+connected connector, an unknown status, multiple candidate cards, or an unavailable helper must
+not be treated as permission to force an output. Later `ensure` calls use the helper's recorded
+connector instead of selecting another port. DisplayPort is never selected: forcing a DP
+connector does not provide the AUX/link-training path needed to establish a usable link without a
+sink.
+Machines without an eligible HDMI connector have no same-session automatic output through this
+path; use the explicitly separate Xvfb mode only when losing the original GUI applications is
+acceptable.
+
+Linux 5.4 exposes connector `status` as a writable DRM sysfs attribute. Its `status_store` accepts
+`on`, `on-digital`, `off`, and `detect`; `on` requests a forced-connected state for an existing
+connector, while `detect` returns it to normal detection. See the [Linux v5.4 DRM sysfs source](https://github.com/torvalds/linux/blob/v5.4/drivers/gpu/drm/drm_sysfs.c#L101-L139)
+and the [status attribute declaration](https://github.com/torvalds/linux/blob/v5.4/drivers/gpu/drm/drm_sysfs.c#L224).
+This changes kernel connector state at runtime; it does not create a DRM connector or guarantee
+that a sinkless HDMI port will scan out a usable mode. Actual rendering, GNOME repaint, and capture
+must be verified on the target hardware.
+
+RandR screen geometry (`xrandr --fb`) and RandR 1.5 logical monitors (`xrandr --setmonitor`, where
+the client and server expose that version) cannot create a DRM connector or a hardware output. The
+[Ubuntu 18.04 xrandr manual](https://manpages.ubuntu.com/manpages/bionic/man1/xrandr.1.html)
+describes `--fb` as screen-size configuration and `--newmode`/`--addmode` as attaching a mode to
+an output. The [RandR 1.5 xrandr manual](https://manpages.ubuntu.com/manpages/jammy/man1/xrandr.1.html)
+describes `--setmonitor` as logical monitor geometry and output associations; it is not a
+substitute for an active connector. The older Bionic manual's omission of `--setmonitor` does not
+by itself establish whether the installed xrandr client implements it.
+
+## Privileged helper
+
+Use the helper binary bundled in the archive for your Ubuntu version. From the extracted archive:
 
 ```sh
-./uu-same-session-setup check
+sudo bash contrib/virtual-desktop/uu-display-setup install "$USER" --boot
 ```
 
-If `intel_ddx=no`, install the packages manually, then run the check again. The setup command never invokes apt:
+Omit `--boot` if only runtime unplug takeover is needed. The installer verifies that the selected
+service user's primary group is not shared with another account, then atomically installs
+`/usr/local/libexec/uuremote-display-helper` as root:group, mode `4750`. `--boot` also installs and
+enables the optional system oneshot for the next boot. Installation does not restart UU, the desktop,
+or the machine, and does not force an output immediately. No driver or display-manager configuration
+is changed. The network-facing host remains an ordinary user process.
+
+Keep the UU user service on the original GNOME `DISPLAY` and `XAUTHORITY`. Remove an obsolete explicit
+`UU_VIRTUAL_DISPLAY_MODE=xvfb` selection or `DISPLAY=:99` override when migrating from aic.3; verify
+the actual original-session values first. The installer does not edit the UU service or credentials.
+
+The helper keeps its ownership record under `/run/uuremote-display-helper`. A force remains in effect
+until explicitly released or rebooted; the optional boot oneshot rechecks it on each boot.
+
+The helper interface is:
 
 ```sh
-sudo apt install xserver-xorg-video-intel x11-xserver-utils x11-utils
+/usr/local/libexec/uuremote-display-helper ensure
+/usr/local/libexec/uuremote-display-helper status
+/usr/local/libexec/uuremote-display-helper release
 ```
 
-These provide the Intel Xorg DDX, `xrandr`/`cvt`, and `xprop` used for local acceptance checks.
+`ensure` may force the eligible connector on and prints its DRM connector name (for example,
+`card0-HDMI-A-1`) when a connector is recorded. Repeated calls report the recorded connector
+without choosing another port. `status` reports that record to its owner. A safe no-op has no
+output. A stale recorded connector or one no longer confirmed as belonging to i915 is an error;
+the state is preserved and no replacement port is selected. A normal caller cannot inspect or
+adopt a record created for another non-root user. The optional boot oneshot creates a root-owned
+record; authorized helper-group callers may use `ensure` and `status` with that record, but only
+root may release it. Root may inspect or release any recorded connector for recovery. `release`
+is an explicit rollback: it returns only the connector recorded by the helper to kernel `detect`
+mode, then clears that record. The helper must not select DP or guess when connector state is
+unknown.
 
-Review the exact Xorg configuration before installing it:
+The boot oneshot runs before `display-manager.service` and has no stop action. It prepares a
+connector, then GDM uses its existing setup to start the original GNOME Xorg user session; this
+feature does not enable automatic login.
+
+Explicit rollback, when returning to normal connector detection is appropriate:
 
 ```sh
-./uu-same-session-setup install --dry-run
+sudo systemctl disable uuremote-display-helper.service  # if installed
+sudo /usr/local/libexec/uuremote-display-helper release
 ```
 
-Install or remove the managed configuration with root:
+To remove the installed helper and optional unit entirely, stop the UU service first and run
+`sudo bash contrib/virtual-desktop/uu-display-setup uninstall "$USER" --boot` from its package.
+The script refuses to remove a changed unit or a helper belonging to another service group.
 
-```sh
-sudo ./uu-same-session-setup install
-sudo ./uu-same-session-setup remove
-```
-
-The installer writes `/etc/X11/xorg.conf.d/30-uu-virtualheads.conf` with `MatchDriver "i915"`,
-`Driver "intel"`, SNA acceleration, and one virtual head. It refuses to overwrite an existing
-file. Removal succeeds only when the file still exactly matches the configuration this tool
-generated. Neither command installs packages, restarts Xorg, changes GDM or automatic login, nor
-grants privileges to `uuremote-server`.
-
-The change takes effect after the next logout/login or reboot. That first Xorg restart closes the
-currently open applications and windows. Plan for that one-time session loss. After the
-configuration has loaded, a physical monitor unplug only changes outputs inside the existing Xorg
-session; application processes and window IDs should remain on that display. Confirm this on the
-target machine before relying on it.
-
-## Startup and runtime settings
-
-Headless boot requires the original GNOME Xorg login session to exist. `VirtualHeads` does not
-create a GNOME session or configure GDM automatic login. If GDM does not start the intended user
-session without a connected monitor, this feature cannot provide that session by itself.
-
-The host uses same-session mode by default. Set `UU_VIRTUAL_DISPLAY_MODE=xvfb` only to select the
-legacy separate Xvfb session; that session cannot inherit arbitrary applications already open on
-the physical desktop. Set `UU_AUTO_VIRTUAL_DISPLAY=0` to disable automatic display handling.
-`UU_VIRTUAL_SIZE` selects the virtual output size and defaults to `1920x1080`.
-
-When `VIRTUAL1` is missing or cannot be activated, the host reports an actionable error and does
-not silently start a second X server. Desktop encoding remains demand-driven: with no remote desktop
-viewer, no desktop stream should run. Once the virtual output has been enabled, replugging a
-physical monitor does not remove it.
+The forced state is intentionally persistent. Closing a viewer, reconnecting, replugging a
+physical display, or stopping the host does not automatically release the HDMI connector. This
+keeps the Xorg output available across those events. Run `status` before any manual rollback, and
+use `release` only when it is appropriate to return the connector to automatic kernel detection.
+The behavior is scoped to one existing connector, but no zero-impact guarantee is made: forcing
+its reported state can affect the original Xorg desktop layout or hardware-specific display
+behavior.
 
 ## Acceptance
 
-The CI same-session fixture exercises RandR activation against a dummy output on an existing X
-session and checks that the original window and process survive the simulated transition. This
-proves the host-side same-session path. It does not prove Intel DDX/SNA hardware rendering, i915
-connector hotplug behavior, cold boot with no monitor, the vehicle's GNOME session, or
-official-client acceptance.
+The target experiment above used a temporary runtime override with the existing released host, not the new automatic implementation. A system-level recovery task restored the experiment independently of the UU process. It proves the existing-kernel route is usable on this target; it does not cover automatic takeover or cold boot.
 
-On the Ubuntu 18.04 target, verify the remaining hardware behavior in the original user session:
+The Xorg dummy CI fixture checks host-side state handling, capture, and original-session identity
+against a synthetic output. It does not prove i915 HDMI scanout, HDMI link behavior with no sink,
+GNOME repaint after physical unplug, monitorless GDM startup, or vehicle acceptance.
 
-1. Install the configuration, then log out and back in or reboot. Confirm `check` reports an i915
-   device, the Intel DDX, and at least one `VIRTUAL` output.
-2. Open a harmless application in the original GNOME session. Record its window ID and
-   `_NET_WM_PID` locally with `xprop`; do not include window titles or contents in logs.
-3. Connect the remote desktop and confirm it shows that application. Unplug the last physical
-   display and confirm the same application PID and window ID remain on the same `DISPLAY` and stay
-   visible remotely.
-4. Close the remote viewer. Confirm no desktop stream or encoder remains active while idle.
-   Reconnect and confirm the same desktop is visible.
-5. Replug the physical display and confirm the virtual output remains available. Separately cold
-   boot with the physical monitor disconnected and verify that GDM creates the intended GNOME Xorg
-   user session before expecting a desktop to be served. A reboot creates a new process, so
-   PID/window continuity applies to hot unplug/replug, not across reboot.
+On a disposable or otherwise approved Ubuntu 18.04 target, verify in the original GNOME Xorg
+session before relying on the feature:
+
+1. Check the installed helper's owner, group, mode, selected DRM card, and connector inventory.
+   Record only connector names and status values. Confirm all physical connectors report known
+   disconnected status before first activation. Confirm the helper picks the lowest-numbered
+   HDMI-A port on the unique i915 card, and repeated `ensure` calls keep using its record. Confirm
+   that DP, multiple-card, and unknown-status cases do not activate an output.
+2. Open a harmless GUI application. Record its Xorg PID, `DISPLAY`, root-window ID, application PID,
+   and window ID locally with `xprop`; do not capture titles or application contents in logs.
+3. Invoke `ensure`, verify the recorded connector and RandR output, then confirm remote capture
+   shows the same application in the same Xorg session after the last physical display is unplugged.
+   Check that the application PID and window ID survive the hot-unplug transition.
+4. Keep the remote viewer connected through physical unplug and confirm the session continues
+   showing the same application without a user reconnect. Close the viewer and confirm no desktop
+   encoder/stream remains active while idle; then reconnect as an intentional new viewing session.
+   Replug a monitor and confirm the forced HDMI output remains available.
+5. Stop the host and verify the output remains forced on. Check `status`, then exercise the explicit
+   `release` rollback and confirm the connector returns to automatic detection.
+6. Separately cold-boot with physical displays disconnected and the optional oneshot enabled.
+   Verify the helper ran before the display manager, then verify GDM starts the intended GNOME Xorg
+   user session using the existing automatic-login setup. The helper does not configure that
+   session. Process IDs change across reboot, so process/window continuity is only meaningful for
+   the hot-unplug test.
+
+The aic.4 release remains unpublished until the helper implementation and target behavior have
+been reviewed and validated. Dummy CI results and source-level feasibility are not hardware
+acceptance.

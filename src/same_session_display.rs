@@ -1,4 +1,4 @@
-//! Select and activate an Intel virtual RandR output on the existing Xorg server.
+//! Activate an existing RandR output without replacing the Xorg desktop or its driver.
 //!
 //! This module never starts an X server or changes the caller's environment. Each external
 //! command is bounded and receives DISPLAY/XAUTHORITY only in its child environment.
@@ -10,6 +10,16 @@ use std::{
 
 const QUERY_TIMEOUT: &str = "3s";
 const ACCEPTANCE_OUTPUT: &str = "DUMMY1";
+const KERNEL_HELPER: &str = "/usr/local/libexec/uuremote-display-helper";
+static ROOT_GEOMETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static OUTPUT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn output_generation() -> u64 {
+    OUTPUT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+fn output_changed() {
+    OUTPUT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Size {
@@ -63,12 +73,27 @@ struct OutputHeader {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Snapshot {
     outputs: Vec<OutputHeader>,
+    root_size: Option<Size>,
 }
 
 impl Snapshot {
     fn parse(text: &str) -> Self {
         let mut outputs = Vec::new();
+        let mut root_size = None;
         for line in text.lines() {
+            if line.starts_with("Screen ") {
+                if let Some((_, current)) = line.split_once("current ") {
+                    let parts: Vec<_> = current.split_whitespace().collect();
+                    if parts.len() >= 3 && parts[1] == "x" {
+                        root_size = Size::parse(&format!(
+                            "{}x{}",
+                            parts[0],
+                            parts[2].trim_end_matches(',')
+                        ))
+                        .ok();
+                    }
+                }
+            }
             let mut words = line.split_whitespace();
             let Some(name) = words.next() else { continue };
             let Some(status) = words.next() else { continue };
@@ -86,13 +111,14 @@ impl Snapshot {
                 at_origin: geometry.is_some_and(|g| g.1),
             });
         }
-        Self { outputs }
+        Self { outputs, root_size }
     }
 
     fn output(&self, name: &str, acceptance_output: bool) -> Option<&OutputHeader> {
-        self.outputs
-            .iter()
-            .find(|output| output.name == name && is_virtual_candidate(name, acceptance_output))
+        self.outputs.iter().find(|output| {
+            output.name == name
+                && (is_virtual_candidate(name, acceptance_output) || hdmi_number(name).is_some())
+        })
     }
 
     fn active_virtual(&self, acceptance_output: bool) -> Option<&OutputHeader> {
@@ -124,7 +150,7 @@ impl Snapshot {
     }
 }
 
-/// Ensure the requested size on an existing Intel virtual RandR output.
+/// Keep an existing virtual output or helper-owned HDMI output usable on the original Xorg.
 ///
 /// When `selected_output` is `None`, a connected non-virtual output makes this a no-op (`Ok(None)`)
 /// in production so a replug race cannot trigger first-time virtual activation. In acceptance mode,
@@ -144,13 +170,37 @@ pub fn ensure(
     let acceptance_output = fixture_output.is_some();
     validate_display(display)?;
     let preferred = Size::parse(preferred_size)?;
+    let mut snapshot = query_snapshot(display, authority)?;
+    let owned = if !acceptance_output
+        && (selected_output.is_some_and(|name| !is_virtual_candidate(name, false))
+            || snapshot.virtual_candidate(false).is_none())
+    {
+        helper_connector("status")?
+    } else {
+        None
+    };
+    let mut owned_output = owned
+        .as_deref()
+        .and_then(|connector| map_connector(&snapshot, connector));
+    if owned_output.as_deref().is_some_and(|name| {
+        snapshot
+            .output(name, false)
+            .is_some_and(|output| !output.connected)
+    }) {
+        // Recover only the previously recorded connector, never select another port.
+        helper_connector("ensure")?;
+        snapshot = query_snapshot(display, authority)?;
+        owned_output = owned
+            .as_deref()
+            .and_then(|connector| map_connector(&snapshot, connector));
+    }
     if let Some(selected) = selected_output {
-        if !is_virtual_candidate(selected, acceptance_output) {
-            return Err("selected output is not an allowed virtual RandR output".into());
+        if !is_virtual_candidate(selected, acceptance_output)
+            && owned_output.as_deref() != Some(selected)
+        {
+            return Err("selected HDMI output is not owned by the runtime display helper".into());
         }
     }
-
-    let snapshot = query_snapshot(display, authority)?;
 
     let target = if let Some(selected) = selected_output {
         snapshot
@@ -165,6 +215,8 @@ pub fn ensure(
             .or_else(|| snapshot.output(selected, acceptance_output))
             .or_else(|| snapshot.virtual_candidate(acceptance_output))
             .map(|output| output.name.clone())
+    } else if let Some(owned) = owned_output {
+        Some(owned)
     } else if let Some(active) = snapshot.active_virtual(acceptance_output) {
         Some(active.name.clone())
     } else if if acceptance_output {
@@ -179,11 +231,35 @@ pub fn ensure(
             .map(|output| output.name.clone())
     };
 
-    let Some(target) = target else {
-        return Err(
-            "same-session virtual output unavailable; configure Intel VirtualHeads; Xvfb cannot preserve the desktop".into(),
-        );
+    let (target, newly_forced) = if let Some(target) = target {
+        (target, false)
+    } else {
+        if acceptance_output
+            || !snapshot
+                .outputs
+                .iter()
+                .any(|output| hdmi_number(&output.name).is_some())
+        {
+            return Err(
+                "no existing virtual or HDMI output is available on this Xorg desktop".into(),
+            );
+        }
+        let connector =
+            helper_connector("ensure")?.ok_or("physical monitor appeared; no port was forced")?;
+        snapshot = match query_snapshot(display, authority) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = helper_connector("release");
+                return Err(error);
+            }
+        };
+        let Some(target) = map_connector(&snapshot, &connector) else {
+            let _ = helper_connector("release");
+            return Err("forced HDMI connector is not exposed by the original Xorg desktop".into());
+        };
+        (target, true)
     };
+    let mut rollback = KernelRollback(newly_forced);
     let current = snapshot.output(&target, acceptance_output);
     if let Some(current_size) = current
         .filter(|output| output.connected)
@@ -191,6 +267,16 @@ pub fn ensure(
         .filter(|size| size.is_supported())
     {
         if current.is_some_and(|output| output.primary && output.at_origin) {
+            if newly_forced {
+                output_changed();
+            }
+            rollback.0 = false;
+            return Ok(Some(target));
+        }
+        // A replug may deliberately change the user's layout. Keep an already active owned
+        // HDMI output in that layout rather than making it primary again on every poll.
+        if !newly_forced && hdmi_number(&target).is_some() {
+            rollback.0 = false;
             return Ok(Some(target));
         }
         let reposition = [
@@ -203,9 +289,41 @@ pub fn ensure(
         if run_xrandr(&reposition, display, authority).is_ok_and(|output| output.status.success())
             && verify_output(display, authority, &target, acceptance_output, current_size)?
         {
+            output_changed();
+            rollback.0 = false;
             return Ok(Some(target));
         }
         return Err("cannot keep the active virtual output and its current size as primary".into());
+    }
+
+    // Use the connector's existing advertised modes. The target i915 kernel supplies
+    // 1024x768 without EDID; arbitrary CVT timings can exceed a sinkless HDMI clock limit.
+    if hdmi_number(&target).is_some() {
+        let args = vec![
+            "--output".into(),
+            target.clone(),
+            "--auto".into(),
+            "--primary".into(),
+            "--pos".into(),
+            "0x0".into(),
+        ];
+        if run_xrandr(&args, display, authority).is_ok_and(|output| output.status.success()) {
+            let activated = query_snapshot(display, authority)?;
+            if activated
+                .output(&target, acceptance_output)
+                .is_some_and(|output| {
+                    output.connected
+                        && output.primary
+                        && output.at_origin
+                        && output.active_size.is_some_and(Size::is_supported)
+                })
+            {
+                output_changed();
+                rollback.0 = false;
+                return Ok(Some(target));
+            }
+        }
+        return Err("cannot activate an advertised mode on the helper-owned HDMI output".into());
     }
 
     let preferred_mode = preferred.mode_name();
@@ -213,6 +331,8 @@ pub fn ensure(
     if run_xrandr(&set_preferred, display, authority).is_ok_and(|output| output.status.success())
         && verify_output(display, authority, &target, acceptance_output, preferred)?
     {
+        output_changed();
+        rollback.0 = false;
         return Ok(Some(target));
     }
 
@@ -230,13 +350,83 @@ pub fn ensure(
     if run_xrandr(&set_custom, display, authority).is_ok_and(|output| output.status.success())
         && verify_output(display, authority, &target, acceptance_output, preferred)?
     {
+        output_changed();
+        rollback.0 = false;
         Ok(Some(target))
     } else {
         Err(format!(
-            "cannot activate {}x{} on the same-session virtual output; verify Intel VirtualHeads and XRandR mode support",
+            "cannot activate {}x{} on the original Xorg output; runtime HDMI force or XRandR mode activation is unsupported",
             preferred.width, preferred.height
         ))
     }
+}
+
+// Restore only a port newly forced by this activation attempt if Xorg cannot use it.
+struct KernelRollback(bool);
+impl Drop for KernelRollback {
+    fn drop(&mut self) {
+        if self.0 {
+            let _ = helper_connector("release");
+        }
+    }
+}
+
+/// Adopt only a connector recorded by the privileged helper, including after a host restart.
+pub fn has_persistent_kernel_output() -> Result<bool, String> {
+    Ok(helper_connector("status")?.is_some())
+}
+
+fn hdmi_number(name: &str) -> Option<&str> {
+    let number = name
+        .strip_prefix("HDMI-A-")
+        .or_else(|| name.strip_prefix("HDMI-"))
+        .or_else(|| name.strip_prefix("HDMI"))?;
+    (!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())).then_some(number)
+}
+
+fn connector_number(connector: &str) -> Option<&str> {
+    let (card, output) = connector.split_once('-')?;
+    let card = card.strip_prefix("card")?;
+    if card.is_empty() || !card.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = output.strip_prefix("HDMI-A-")?;
+    (!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())).then_some(number)
+}
+
+fn map_connector(snapshot: &Snapshot, connector: &str) -> Option<String> {
+    let number = connector_number(connector)?;
+    let mut matching = snapshot
+        .outputs
+        .iter()
+        .filter(|output| hdmi_number(&output.name) == Some(number));
+    let name = matching.next()?.name.clone();
+    matching.next().is_none().then_some(name)
+}
+
+fn helper_connector(action: &str) -> Result<Option<String>, String> {
+    if !Path::new(KERNEL_HELPER).is_file() {
+        return if action == "status" {
+            Ok(None)
+        } else {
+            Err("runtime display helper is missing; install the scoped helper from contrib/virtual-desktop (no driver changes)".into())
+        };
+    }
+    let output = run_bounded(KERNEL_HELPER, &[action.into()], None)
+        .map_err(|_| "runtime display helper could not run or timed out".to_owned())?;
+    if !output.status.success() {
+        return Err("runtime display helper refused the operation; check its scoped installation and connector support".into());
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| "invalid runtime display helper reply")?
+        .trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if connector_number(text).is_none() || text.len() > 80 {
+        return Err("invalid runtime display helper connector".into());
+    }
+    Ok(Some(text.to_owned()))
 }
 
 fn query_snapshot(display: &str, authority: Option<&Path>) -> Result<Snapshot, String> {
@@ -248,7 +438,15 @@ fn query_snapshot(display: &str, authority: Option<&Path>) -> Result<Snapshot, S
             "cannot query same-session XRandR outputs; check the display and Xauthority".into(),
         );
     }
-    Ok(Snapshot::parse(&String::from_utf8_lossy(&query.stdout)))
+    let snapshot = Snapshot::parse(&String::from_utf8_lossy(&query.stdout));
+    if let Some(size) = snapshot.root_size {
+        let geometry = (u64::from(size.width) << 32) | u64::from(size.height);
+        let previous = ROOT_GEOMETRY.swap(geometry, std::sync::atomic::Ordering::AcqRel);
+        if previous != 0 && previous != geometry {
+            output_changed();
+        }
+    }
+    Ok(snapshot)
 }
 
 fn verify_output(
@@ -464,6 +662,13 @@ mod tests {
              VIRTUAL2 disconnected (normal left inverted right x axis y axis)\n",
         );
 
+        assert_eq!(
+            parsed.root_size,
+            Some(Size {
+                width: 1920,
+                height: 1080
+            })
+        );
         assert_eq!(parsed.outputs.len(), 3);
         assert_eq!(parsed.outputs[0].name, "eDP-1");
         assert!(parsed.outputs[0].primary);
@@ -481,6 +686,21 @@ mod tests {
         assert!(!parsed.outputs[2].connected);
         assert_eq!(parsed.virtual_candidate(false).unwrap().name, "VIRTUAL1");
         assert_eq!(parsed.outputs[2].name, "VIRTUAL2");
+    }
+
+    #[test]
+    fn kernel_connector_mapping_requires_one_existing_hdmi_output() {
+        let snapshot = Snapshot::parse("DP-1 disconnected\nHDMI-1 disconnected\n");
+        assert_eq!(
+            map_connector(&snapshot, "card0-HDMI-A-1").as_deref(),
+            Some("HDMI-1")
+        );
+        assert!(map_connector(&snapshot, "card0-DP-1").is_none());
+        assert!(map_connector(&snapshot, "card0-HDMI-A-1\nother").is_none());
+        assert!(map_connector(&snapshot, "../../HDMI-A-1").is_none());
+        assert!(map_connector(&snapshot, "card0-HDMI-A-2").is_none());
+        let ambiguous = Snapshot::parse("HDMI-1 disconnected\nHDMI1 disconnected\n");
+        assert!(map_connector(&ambiguous, "card0-HDMI-A-1").is_none());
     }
 
     #[test]

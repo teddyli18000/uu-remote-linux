@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HELPER_NAME=uuremote-display-helper
+HELPER_DEST=/usr/local/libexec/uuremote-display-helper
+UNIT_NAME=uuremote-display-helper.service
+UNIT_DEST=/etc/systemd/system/uuremote-display-helper.service
+
+usage() {
+  echo "Usage: sudo $0 install SERVICE_USER [--boot] | uninstall SERVICE_USER [--boot]" >&2
+  exit 2
+}
+
+fail() {
+  echo "uu-display-setup: $*" >&2
+  exit 1
+}
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || fail "run this script with sudo"
+[[ $# -ge 2 && $# -le 3 ]] || usage
+action=$1
+service_user=$2
+boot=false
+if [[ $# -eq 3 ]]; then
+  [[ $3 == --boot ]] || usage
+  boot=true
+fi
+[[ $action == install || $action == uninstall ]] || usage
+[[ $service_user =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || fail "invalid service username"
+
+script_dir=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd -P)
+packaged_helper=$script_dir/$HELPER_NAME
+packaged_unit=$script_dir/$UNIT_NAME
+
+entry=$(getent passwd "$service_user") || fail "service user does not exist"
+IFS=: read -r account _ service_uid service_gid _ _ _ <<<"$entry"
+[[ $account == "$service_user" && $service_uid =~ ^[0-9]+$ && $service_gid =~ ^[0-9]+$ ]] || fail "cannot resolve service account"
+(( service_uid != 0 )) || fail "the graphical service account must not be root"
+
+group_entry=$(getent group "$service_gid") || fail "cannot resolve the service user's primary group"
+IFS=: read -r service_group _ group_gid group_members <<<"$group_entry"
+[[ $group_gid == "$service_gid" ]] || fail "primary group lookup is inconsistent"
+IFS=, read -r -a member_list <<<"${group_members:-}"
+for member in "${member_list[@]}"; do
+  [[ -z $member || $member == "$service_user" ]] || fail "primary group '$service_group' also includes '$member'; use a dedicated group or review access first"
+done
+while IFS=: read -r other_user _ _ other_gid _ _ _; do
+  if [[ $other_gid == "$service_gid" && $other_user != "$service_user" ]]; then
+    fail "primary group '$service_group' is shared with account '$other_user'; use a dedicated group or review access first"
+  fi
+done < <(getent passwd)
+
+safe_directory() {
+  local path=$1
+  [[ -d $path && ! -L $path ]] || fail "expected a real directory at $path"
+  [[ $(stat -c %u -- "$path") == 0 ]] || fail "$path is not root-owned"
+  ! find "$path" -maxdepth 0 -perm /0022 -print -quit | grep -q . || fail "$path is writable by its group or other users"
+}
+
+safe_destination() {
+  local path=$1
+  if [[ -L $path ]]; then
+    fail "refusing to replace symlink $path"
+  fi
+  if [[ -e $path ]]; then
+    [[ -f $path && $(stat -c %u -- "$path") == 0 ]] || fail "refusing to replace a non-regular or non-root-owned file at $path"
+  fi
+}
+
+atomic_install() {
+  local source=$1 destination=$2 owner_group=$3 mode=$4 directory stage
+  directory=$(dirname -- "$destination")
+  safe_destination "$destination"
+  stage=$(mktemp "$directory/.uu-display-setup.XXXXXX") || fail "cannot create an atomic staging file in $directory"
+  if ! install -o root -g "$owner_group" -m "$mode" -- "$source" "$stage"; then
+    rm -f -- "$stage"
+    fail "cannot stage $destination"
+  fi
+  if ! mv -fT -- "$stage" "$destination"; then
+    rm -f -- "$stage"
+    fail "cannot atomically install $destination"
+  fi
+}
+
+user_manager() {
+  runuser -u "$service_user" -- env \
+    XDG_RUNTIME_DIR="/run/user/$service_uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$service_uid/bus" \
+    systemctl --user "$@"
+}
+
+if [[ $action == install ]]; then
+  [[ -f $packaged_helper && ! -L $packaged_helper && -x $packaged_helper ]] || fail "packaged helper '$HELPER_NAME' is missing; use the release archive for your Ubuntu version"
+  [[ -f $packaged_unit && ! -L $packaged_unit ]] || fail "packaged boot unit is missing"
+  command -v runuser >/dev/null || fail "runuser is required"
+  command -v systemctl >/dev/null || fail "systemctl is required"
+  [[ -d /usr/local && ! -L /usr/local ]] || fail "/usr/local must be a real directory"
+  safe_directory /usr/local
+  if [[ ! -e /usr/local/libexec ]]; then
+    install -d -o root -g root -m 0755 /usr/local/libexec
+  fi
+  safe_directory /usr/local/libexec
+  safe_destination "$HELPER_DEST"
+  if [[ -e $HELPER_DEST ]]; then
+    [[ $(stat -c %g -- "$HELPER_DEST") == "$service_gid" && $(stat -c %a -- "$HELPER_DEST") == 4750 ]] || fail "installed helper has unexpected group or mode at $HELPER_DEST"
+  fi
+  if $boot; then
+    safe_directory /etc
+    safe_directory /etc/systemd
+    safe_directory /etc/systemd/system
+    safe_destination "$UNIT_DEST"
+    if [[ -e $UNIT_DEST ]] && ! cmp -s -- "$packaged_unit" "$UNIT_DEST"; then
+      fail "boot unit at $UNIT_DEST differs from this package; review it before replacing"
+    fi
+  fi
+
+  atomic_install "$packaged_helper" "$HELPER_DEST" "$service_gid" 4750
+  if $boot; then
+    atomic_install "$packaged_unit" "$UNIT_DEST" root 0644
+    systemctl daemon-reload
+    systemctl enable "$UNIT_NAME"
+  fi
+  echo "Installed $HELPER_DEST for $service_user (group $service_group)."
+  if $boot; then
+    echo "Enabled the optional pre-display-manager oneshot for the next boot; no service or desktop was restarted."
+  else
+    echo "The boot oneshot remains disabled; pass --boot to enable it for the next boot."
+  fi
+  exit 0
+fi
+
+[[ -x $HELPER_DEST && ! -L $HELPER_DEST && $(stat -c %u -- "$HELPER_DEST") == 0 ]] || fail "installed helper is missing or is not a root-owned regular file"
+[[ $(stat -c %g -- "$HELPER_DEST") == "$service_gid" ]] || fail "installed helper belongs to a different service group"
+[[ -f $HELPER_DEST && $(stat -c %a -- "$HELPER_DEST") == 4750 ]] || fail "installed helper is not a regular mode-4750 file"
+command -v runuser >/dev/null || fail "runuser is required"
+command -v systemctl >/dev/null || fail "systemctl is required"
+manager_state=$(user_manager is-active uuremote-native.service 2>/dev/null) || {
+  [[ $manager_state == inactive || $manager_state == unknown ]] || fail "cannot verify the UU user service state; leave the helper installed"
+}
+[[ $manager_state != active ]] || fail "stop uuremote-native.service before uninstalling its display helper"
+
+if [[ -e $UNIT_DEST || -L $UNIT_DEST ]]; then
+  $boot || fail "the boot unit is installed; pass --boot to remove it too"
+  [[ -f $UNIT_DEST && ! -L $UNIT_DEST && $(stat -c %u -- "$UNIT_DEST") == 0 ]] || fail "refusing to remove an unexpected boot unit"
+  [[ -f $packaged_unit ]] && cmp -s -- "$packaged_unit" "$UNIT_DEST" || fail "boot unit differs from this package; review it before removing"
+fi
+
+# Release only the connector recorded by this helper. It remains persistent on ordinary host exit.
+owned_connector=$("$HELPER_DEST" status) || fail "helper state is invalid; inspect it before uninstalling"
+if [[ -n $owned_connector ]]; then
+  "$HELPER_DEST" release || fail "could not return the recorded connector to automatic detection"
+fi
+
+if $boot && [[ -f $UNIT_DEST ]]; then
+  systemctl disable "$UNIT_NAME"
+  rm -f -- "$UNIT_DEST"
+  systemctl daemon-reload
+fi
+rm -f -- "$HELPER_DEST"
+echo "Removed the helper and released only its recorded connector. The UU user service was not changed."

@@ -192,9 +192,14 @@ impl VirtualDisplayManager {
 
         if self.same_session {
             // Keep the real GDM authority path: it may be created/refreshed after host startup.
-            state.authority = Some(std::env::var_os("XAUTHORITY").map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Xauthority")))
-                .unwrap_or_default());
+            state.authority = Some(
+                std::env::var_os("XAUTHORITY")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Xauthority"))
+                    })
+                    .unwrap_or_default(),
+            );
             return Ok(());
         }
 
@@ -372,24 +377,40 @@ impl VirtualDisplayManager {
 
     fn poll_same_session(&self, state: &mut State) -> Result<Option<DisplayConfig>, String> {
         if state.output.is_none() {
-            if physical_monitor_status(&self.drm_root) != MonitorStatus::Disconnected {
+            let persistent = self.fixture_output.is_none()
+                && crate::same_session_display::has_persistent_kernel_output()?;
+            let status = physical_monitor_status(&self.drm_root);
+            if !persistent && status != MonitorStatus::Disconnected {
                 state.disconnected_samples = 0;
                 return Ok(None);
             }
             state.disconnected_samples = state.disconnected_samples.saturating_add(1);
-            if state.disconnected_samples < DISCONNECTED_SAMPLES { return Ok(None); }
+            if state.disconnected_samples < DISCONNECTED_SAMPLES {
+                return Ok(None);
+            }
         }
         let authority = state.authority.as_ref().unwrap();
-        let displays: Vec<String> = std::env::var("DISPLAY").ok().filter(|s| !s.is_empty())
-            .map(|display| vec![display]).unwrap_or_else(|| vec![":0".into(), ":1".into()]);
-        let size = std::env::var("UU_VIRTUAL_SIZE").unwrap_or_else(|_| "1920x1080".into());
+        let displays: Vec<String> = std::env::var("DISPLAY")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|display| vec![display])
+            .unwrap_or_else(|| vec![":0".into(), ":1".into()]);
+        let size = std::env::var("UU_VIRTUAL_SIZE").unwrap_or_else(|_| "1024x768".into());
         let mut failure = String::new();
         for display in displays {
-            match crate::same_session_display::ensure(&display, Some(authority), &size,
-                state.output.as_deref(), self.fixture_output.as_deref()) {
+            match crate::same_session_display::ensure(
+                &display,
+                Some(authority),
+                &size,
+                state.output.as_deref(),
+                self.fixture_output.as_deref(),
+            ) {
                 Ok(Some(output)) => {
                     state.output = Some(output);
-                    let config = DisplayConfig { display, authority: authority.clone() };
+                    let config = DisplayConfig {
+                        display,
+                        authority: authority.clone(),
+                    };
                     state.config = Some(config.clone());
                     return Ok(Some(config));
                 }
@@ -503,7 +524,9 @@ pub fn display_config() -> Option<DisplayConfig> {
         .and_then(|v| v.read().ok().and_then(|config| config.clone()))
 }
 
-pub fn same_session_mode() -> bool { global_manager().same_session }
+pub fn same_session_mode() -> bool {
+    global_manager().same_session
+}
 
 /// Prepare the private authority file from the synchronous process entry point.
 pub fn prepare_environment() -> Result<(), String> {
@@ -618,8 +641,10 @@ fn drm_connector_kind(name: &str) -> ConnectorKind {
 
 fn classify_connector(name: &str) -> ConnectorKind {
     let lower = name.to_ascii_lowercase();
-    if lower.strip_prefix("virtual").is_some_and(|suffix|
-        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())) {
+    if lower
+        .strip_prefix("virtual")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+    {
         return ConnectorKind::Virtual;
     }
     if ["virtual-", "writeback-"]

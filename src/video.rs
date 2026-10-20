@@ -758,6 +758,45 @@ pub(crate) fn transport_closed(pc: &RTCPeerConnection) -> bool {
         || pc.sctp().state() == webrtc::sctp_transport::sctp_transport_state::RTCSctpTransportState::Closed
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OutputRefreshWait {
+    Refreshed,
+    TimedOut,
+    SenderClosed,
+    PeerClosed,
+}
+
+const OUTPUT_REFRESH_RECOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn wait_for_output_refresh_signal(
+    output_refresh: &mut tokio::sync::watch::Receiver<u64>, timeout: Duration,
+) -> OutputRefreshWait {
+    match tokio::time::timeout(timeout, output_refresh.changed()).await {
+        Ok(Ok(())) => OutputRefreshWait::Refreshed,
+        Ok(Err(_)) => OutputRefreshWait::SenderClosed,
+        Err(_) => OutputRefreshWait::TimedOut,
+    }
+}
+
+async fn wait_for_output_refresh_or_close(
+    pc: &RTCPeerConnection, output_refresh: &mut tokio::sync::watch::Receiver<u64>, timeout: Duration,
+) -> OutputRefreshWait {
+    if transport_closed(pc) { return OutputRefreshWait::PeerClosed; }
+    let wait = wait_for_output_refresh_signal(output_refresh, timeout);
+    tokio::pin!(wait);
+    let mut health = tokio::time::interval(Duration::from_millis(200));
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut wait => {
+                if transport_closed(pc) { return OutputRefreshWait::PeerClosed; }
+                return result;
+            },
+            _ = health.tick() => if transport_closed(pc) { return OutputRefreshWait::PeerClosed; },
+        }
+    }
+}
+
 fn probe_settings() -> Result<VideoSettings,String> {
     let fps=crate::wayland::capture_fps(std::env::var("UU_PROBE_FPS").ok().as_deref())?;
     // UU_PROBE_QUALITY selects a viewer preset (1 fast 1M, 2 general 2M, 3 HD 8M, 4 bluray 20M,
@@ -887,13 +926,18 @@ pub async fn probe(size:(u32,u32),display:String,portal:Option<Arc<crate::portal
 }
 
 pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_track::VideoTrack>, size: (u32, u32), display: String, portal:Option<Arc<crate::portal::PortalSession>>,
-    mut settings: tokio::sync::watch::Receiver<VideoSettings>, applied: Arc<tokio::sync::watch::Sender<VideoSettings>>, idr: Arc<AtomicBool>) -> Result<(), String> {
+    mut settings: tokio::sync::watch::Receiver<VideoSettings>, applied: Arc<tokio::sync::watch::Sender<VideoSettings>>, idr: Arc<AtomicBool>,
+    mut output_refresh: tokio::sync::watch::Receiver<u64>) -> Result<(), String> {
     loop {
         if transport_closed(&pc) { return Ok(()); }
         if pc.connection_state() == RTCPeerConnectionState::Connected
             && pc.sctp().state() == webrtc::sctp_transport::sctp_transport_state::RTCSctpTransportState::Connected { break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    let x11_output = portal.is_none() && !display.starts_with("wayland:") && !display.starts_with("kms:");
+    let output_refresh_recovery = cfg!(target_os = "linux") && x11_output
+        && crate::virtual_display::same_session_mode()
+        && std::env::var("UU_AUTO_VIRTUAL_DISPLAY").ok().as_deref() != Some("0");
     // Portal power/idle policy belongs to its CONTROL-scoped supervisor,
     // including when video has no frames or the user locks manually.
     if portal.is_none() { crate::capture::keep_display_awake()?; }
@@ -906,6 +950,20 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
         current.codec = VideoCodec::H265; // H265-only remote video offer.
         applied.send_replace(current);
         settings.borrow_and_update();
+    }
+    let mut size = size;
+    if x11_output {
+        // An output refresh can arrive while this peer is waiting for transport setup. Start the
+        // first encoder at the current root size and consume that already-applied generation.
+        let generation = *output_refresh.borrow_and_update();
+        if let Some(refreshed) = crate::capture::x11_dimensions().filter(|(width,height)| *width > 0 && *height > 0) {
+            size = refreshed;
+        }
+        if *output_refresh.borrow_and_update() != generation {
+            if let Some(refreshed) = crate::capture::x11_dimensions().filter(|(width,height)| *width > 0 && *height > 0) {
+                size = refreshed;
+            }
+        }
     }
     let mut reader = EncoderTask(tokio::spawn(read_encoder(size, display.clone(), portal.clone(), latest.clone(), current, sequence.clone(), idr.clone(), budget.clone())));
     let mut previous = None;
@@ -921,10 +979,25 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
     // sent/skipped are cumulative; window_* and max_* cover the interval since the last stats line.
     let (mut window_frames, mut window_skipped) = (0u64, 0u64);
     let mut send_interrupted=false;
+    let mut output_interrupted=false;
+    let mut output_restart_required=false;
+    let mut output_refresh_open=true;
     'stream: loop {
         let next = *settings.borrow_and_update();
-        if next != current || send_interrupted {
-            let discard = next.codec != current.codec || send_interrupted;
+        let mut size_changed=false;
+        if output_interrupted {
+            output_interrupted=false;
+            if let Some((width,height)) = crate::capture::x11_dimensions().filter(|(width,height)| *width > 0 && *height > 0) {
+                let refreshed=(width,height);
+                if refreshed != size {
+                    log::info!("Desktop output geometry changed: {}x{} -> {}x{}", size.0, size.1, width, height);
+                    size=refreshed;
+                    size_changed=true;
+                }
+            }
+        }
+        if next != current || send_interrupted || size_changed || output_restart_required {
+            let discard = next.codec != current.codec || send_interrupted || size_changed || output_restart_required;
             current = next;
             timeline.fps = u64::from(next.fps);
             if discard {
@@ -936,8 +1009,18 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
                 reader.restart(read_encoder(size, display.clone(), portal.clone(), latest.clone(), next, sequence.clone(), idr.clone(), budget.clone())).await;
             }
             send_interrupted=false;
+            output_restart_required=false;
         }
         tokio::select! {
+            biased;
+            changed = output_refresh.changed(), if output_refresh_open => {
+                if changed.is_err() { output_refresh_open=false; }
+                else {
+                    output_interrupted=true;
+                    output_restart_required |= reader.0.is_finished();
+                }
+                continue;
+            },
             result = &mut reader.0 => {
                 let result = result.map_err(|e| format!("Encoder reader task: {e}"))?;
                 if let (Err(error), VideoCodec::H265, true) = (&result, current.codec, track.supports(VideoCodec::H264)) {
@@ -948,7 +1031,31 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
                     reader.0 = tokio::spawn(read_encoder(size, display.clone(), portal.clone(), latest.clone(), current, sequence.clone(), idr.clone(), budget.clone()));
                     continue;
                 }
-                return result;
+                if let Err(error) = result {
+                    if output_refresh_recovery && output_refresh_open {
+                        match wait_for_output_refresh_or_close(&pc, &mut output_refresh, OUTPUT_REFRESH_RECOVERY_TIMEOUT).await {
+                            OutputRefreshWait::Refreshed => {
+                                if let Some((width,height)) = crate::capture::x11_dimensions().filter(|(width,height)| *width > 0 && *height > 0) {
+                                    let refreshed=(width,height);
+                                    if refreshed != size {
+                                        log::info!("Desktop output geometry changed: {}x{} -> {}x{}", size.0, size.1, width, height);
+                                        size=refreshed;
+                                    }
+                                }
+                                current=*settings.borrow_and_update();
+                                timeline.fps=u64::from(current.fps);
+                                while receiver.try_recv().is_ok() {}
+                                reader.0=tokio::spawn(read_encoder(size,display.clone(),portal.clone(),latest.clone(),current,sequence.clone(),idr.clone(),budget.clone()));
+                                continue 'stream;
+                            }
+                            OutputRefreshWait::PeerClosed => return Ok(()),
+                            OutputRefreshWait::TimedOut => log::warn!("X11 output recovery timed out after encoder failure"),
+                            OutputRefreshWait::SenderClosed => output_refresh_open=false,
+                        }
+                    }
+                    return Err(error);
+                }
+                return Ok(());
             },
             _ = health.tick() => { if transport_closed(&pc) { return Ok(()); } },
             changed = settings.changed(), if settings_open => {
@@ -972,6 +1079,17 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
                 tokio::pin!(send);
                 loop {
                     tokio::select! {
+                        biased;
+                        changed = output_refresh.changed(), if output_refresh_open => {
+                            if changed.is_err() { output_refresh_open=false; }
+                            else {
+                                output_interrupted=true;
+                                // The pending RTP sample is cancelled below; restart the producer
+                                // so the dependency gate yields a fresh IDR even at unchanged size.
+                                output_restart_required=true;
+                            }
+                            continue 'stream;
+                        },
                         result = &mut send => { result.map_err(|e| format!("Video send: {e}"))?; break; },
                         _ = health.tick() => { if transport_closed(&pc) { return Ok(()); } },
                         changed = settings.changed(), if settings_open => {
@@ -1078,6 +1196,24 @@ mod tests {
         }
     }
     use super::*;
+    #[tokio::test]
+    async fn x11_output_recovery_wait_is_bounded_and_observes_watch_lifecycle() {
+        let (tx, mut rx) = tokio::sync::watch::channel(0u64);
+        let waiting = wait_for_output_refresh_signal(&mut rx, Duration::from_secs(1));
+        tokio::pin!(waiting);
+        tx.send_replace(1);
+        assert_eq!(waiting.await, OutputRefreshWait::Refreshed);
+
+        let (_tx, mut rx) = tokio::sync::watch::channel(0u64);
+        assert_eq!(wait_for_output_refresh_signal(&mut rx, Duration::from_millis(1)).await,
+            OutputRefreshWait::TimedOut);
+
+        let (tx, mut rx) = tokio::sync::watch::channel(0u64);
+        drop(tx);
+        assert_eq!(wait_for_output_refresh_signal(&mut rx, Duration::from_secs(1)).await,
+            OutputRefreshWait::SenderClosed);
+    }
+
     #[tokio::test]
     async fn frame_budget_spans_queued_sending_and_restarted_encoders() {
         let budget=Arc::new(Semaphore::new(2));

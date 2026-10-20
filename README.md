@@ -4,7 +4,7 @@
 
 > **本仓库是 [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux) 的 AIC 自用 fork。**
 > 日常开发与自有发布使用 `main`，向上游贡献使用独立分支。下载见[本 fork Releases](https://github.com/teddyli18000/uu-remote-linux/releases)。
-> 当前 `v0.2.12-aic.4` 为预发布：断屏时在原 Xorg 会话内补充虚拟输出，保留原桌面窗口；需先配置驱动虚拟输出，详见[发布说明](docs/release-notes/v0.2.12-aic.4.md)。
+> `v0.2.12-aic.4` 尚未发布：车端已验证 i915 HDMI 临时补屏可通过官方 UU 操作原 GNOME 桌面；新版自动接管及无屏开机仍待验收。方案只运行时强制一个现有 HDMI 连接器，不安装/切换驱动或修改 Xorg 配置；无唯一且状态明确的 HDMI 时无法补屏。详见[开发状态](contrib/virtual-desktop/SAME_SESSION.md)。
 > 已在 WSL 验证列表刷新、远端终止、关闭本地窗口结束对应会话，以及先开终端再开桌面，详见[兼容与验收记录](docs/ubuntu-18.04.md)。本地可视化终端只读，命令从 Windows 的 UU 终端输入。车端仍需单独部署验收。
 > 本 fork 预发布仅提供 tar 包；Docker 镜像在后续稳定版发布。
 > 以下保留上游功能说明与署名；上游验证记录不代表本 fork 已完成全部实测。
@@ -219,11 +219,11 @@ install -Dm644 contrib/desktop/uu-remote-linux-viewer.desktop ~/.local/share/app
 
 ## 没有显示器的服务器
 
-**原桌面自动补屏（默认开启，X11）**：当最后一块物理显示器拔掉时，在原 Xorg 会话中启用驱动提供的虚拟输出，保留原 Ubuntu 桌面、窗口和应用进程。不会另开 Openbox 桌面。Intel 核显需先配置一次 [VirtualHeads 同会话输出](contrib/virtual-desktop/SAME_SESSION.md)，初次配置要重启图形会话，此后断屏切换不重启桌面。驱动没有虚拟输出时明确报错并保留原会话。
+**原桌面自动补屏（X11 开发中）**：当前路线在所有物理 DRM 连接器状态均明确为 disconnected 时，通过受限的运行时 helper 强制一个现有 i915 HDMI-A 连接器；保留原 GNOME Xorg 会话、窗口和应用进程，不另开桌面，不安装/切换驱动、修改 Xorg 配置或重启图形会话。要求唯一 i915 DRM card；若有多个 HDMI-A 端口，按端口号选择最小者。未知状态、多个 i915 card 或没有 HDMI 时不强制，绝不选择 DisplayPort。Ubuntu 18.04 / Linux 5.4 / i915 目标机已验证：HDMI 拔掉后临时 force-on，官方 UU 可显示完整原 GNOME 桌面并正常拖动窗口和输入。新版自动接管及无屏开机仍待验收，aic.4 尚未发布。可选系统 oneshot 可在 GDM 前 force connector，但仍要求 GDM 使用已有自动登录配置启动原 GNOME Xorg 用户会话；本功能不修改 GDM。热拔屏切换设计为保留现有桌面连接，无需用户重连，仍待目标机验收。详见[开发状态及验收要求](contrib/virtual-desktop/SAME_SESSION.md)。
 
-观看时才采集编码；关闭观看保留虚拟输出和应用，重新插屏也不销毁它。服务停止仍保留同会话虚拟输出。切换时已有桌面连接需重连，独立工具和 PTY 保留，本机终端窗口也留在原会话。
+观看时才采集编码；关闭观看保留虚拟输出和应用，重新插屏也不销毁它。服务停止仍保留同会话虚拟输出。热拔屏切换设计为保留已有桌面连接，无需用户重连；此行为仍待目标机验收。独立工具和 PTY 保留，本机终端窗口也留在原会话。
 
-`UU_AUTO_VIRTUAL_DISPLAY=0` 关闭补屏；`UU_VIRTUAL_SIZE` 指定尺寸（默认 1920×1080）。无屏开机需要 GDM 能启动原来的 Xorg 用户桌面；linger 只启动用户服务，不能替代图形登录。未知连接状态、锁屏或 DPMS 熄屏不算拔屏。显式 `none/wayland/portal/kms` 后端不启用此功能。
+`UU_AUTO_VIRTUAL_DISPLAY=0` 关闭补屏；HDMI 使用端口已有模式，目标机无屏时为 1024×768；已有软件虚拟输出可用 `UU_VIRTUAL_SIZE` 指定尺寸（默认 1024×768）。无屏开机可选择安装[systemd oneshot 样例](contrib/virtual-desktop/uuremote-display-helper.service)在显示管理器前 force HDMI；GDM 仍须沿用现有设置启动原 Xorg 用户桌面。linger 只启动用户服务，不能替代图形登录。未知连接状态、锁屏或 DPMS 熄屏不算拔屏。显式 `none/wayland/portal/kms` 后端不启用此功能。
 
 需要独立软件桌面时，可显式设置 `UU_VIRTUAL_DISPLAY_MODE=xvfb` 并安装 `xvfb xauth x11-utils dbus-x11 openbox`；该模式沿用独立 Xvfb，会另开桌面，不能保留原桌面 GUI 窗口。下文手动 Xvfb 配置也适用于该用途。
 

@@ -162,6 +162,8 @@ wsl --unregister uu-bionic-test
 
 ### 原桌面补屏修正（aic.4）
 
-aic.3 的自动 Xvfb 是独立 Openbox 会话，不能保留原 GNOME 窗口。aic.4 默认改为在原 Xorg 中启用驱动提供的虚拟输出；先按 [同会话配置](../contrib/virtual-desktop/SAME_SESSION.md) 配置 Intel VirtualHeads。一次初始图形会话重启会关闭当时应用，此后运行中拔屏不更换 Xorg。不要将旧的 DISPLAY=:99 或 Xvfb 服务当作原桌面配置；服务应使用实际 GNOME Xorg DISPLAY/XAUTHORITY。冷启动要求原用户图形会话能在无屏时启动。
+aic.3 的自动 Xvfb 是独立 Openbox 会话，不能保留原 GNOME 窗口。aic.4 尚未发布；当前开发路线是通过固定路径 `/usr/local/libexec/uuremote-display-helper`，在所有 DRM 连接器均报告明确断开后，运行时强制现有唯一 i915 DRM card 上端口号最小的 HDMI-A 连接器。它不安装、替换或切换显卡驱动，不修改 Xorg/GDM 配置，也不重启图形会话。helper 预期由发行包安装为 root 所有、模式 4750，并限制到本地 GNOME 服务用户的组；网络服务进程本身保持非 root。不能使用 DP，未知状态、多 i915 card 或没有 HDMI 时不得强制连接。内核强制状态不保证无屏 HDMI 实际扫描出可捕获图像。可选 root oneshot 可在 `display-manager.service` 前 force HDMI；它不设置 GDM 自动登录，用户会话仍依赖机器上已有的自动登录设置。具体前提、命令、回滚及验收见[同会话补屏说明](../contrib/virtual-desktop/SAME_SESSION.md)。
+
+不要将旧的 DISPLAY=:99 或 Xvfb 服务当作原桌面配置；服务应使用实际 GNOME Xorg DISPLAY/XAUTHORITY。冷启动需要启用可选 oneshot，在 GDM 前准备 HDMI；GDM 仍必须沿用现有配置启动原用户图形会话，helper 不会配置自动登录。目标机（Linux 5.4.0-150、i915）已经通过临时 HDMI force-on 与三分钟原桌面连接实验：HDMI 拔掉时，官方 UU 可完整显示原 GNOME，并正常拖动窗口、键盘输入，实验后可恢复重连。新版自动热拔屏接管与无屏冷启动仍待验收；dummy CI 不代表硬件结果。现有桌面连接设计为热拔屏后继续工作、无需用户重连，仍待目标验收。没有合适 HDMI 时，当前约束下同会话自动补屏仍未解决。
 
 历史部署/客户端结果仅适用于当时记录版本。本修正的 dummy CI 验证不代表 Intel 显卡、GDM 无屏登录或本版本官方客户端已经完成车端验收。

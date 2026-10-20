@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep an existing HDMI output available for a monitorless desktop
+Before=display-manager.service
+Wants=systemd-udev-settle.service
+After=systemd-udev-settle.service
+ConditionPathIsExecutable=/usr/local/libexec/uuremote-display-helper
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/uuremote-display-helper ensure
+RemainAfterExit=yes
+TimeoutStartSec=5
+
+[Install]
+WantedBy=graphical.target

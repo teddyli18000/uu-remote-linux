@@ -48,6 +48,7 @@ pub struct WebRtcSession {
     pub input: Arc<InputInjector>,
     desktop_active: Arc<std::sync::atomic::AtomicBool>,
     desktop_activation: tokio::sync::watch::Sender<bool>,
+    desktop_output_refresh: tokio::sync::watch::Sender<u64>,
     peer_closed: tokio::sync::watch::Sender<bool>,
     input_session: Arc<std::sync::Mutex<Option<Arc<crate::input::DesktopInputSession>>>>,
     desktop_request: Arc<std::sync::Mutex<Option<(tokio::sync::mpsc::UnboundedSender<String>, String)>>>,
@@ -61,6 +62,16 @@ pub struct WebRtcSession {
 impl WebRtcSession {
     pub fn is_desktop(&self) -> bool {
         self.desktop_active.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Refresh geometry on the existing X11 desktop peer after its RandR output changes.
+    /// The caller must refresh X11 geometry and publish the same-session display first.
+    pub fn refresh_desktop_output(&self) -> bool {
+        if !self.is_desktop() || self.capture.backend != crate::desktop_backend::DesktopBackend::X11 {
+            return false;
+        }
+        self.desktop_output_refresh.send_modify(|revision| *revision = revision.wrapping_add(1));
+        true
     }
 
     pub fn set_desktop_request_sender(&self, sender: tokio::sync::mpsc::UnboundedSender<String>, ice_id: String) {
@@ -174,6 +185,7 @@ impl WebRtcSession {
         let input_session=Arc::new(std::sync::Mutex::new(desktop.then(||input.desktop_session())));
         let desktop_active=Arc::new(std::sync::atomic::AtomicBool::new(desktop));
         let (desktop_activation, _) = tokio::sync::watch::channel(desktop);
+        let (desktop_output_refresh, _) = tokio::sync::watch::channel(0u64);
         let (peer_closed, _) = tokio::sync::watch::channel(false);
         let desktop_request=Arc::new(std::sync::Mutex::new(None));
         let promotion_pending=Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -389,9 +401,11 @@ impl WebRtcSession {
         // m-line; their encoder remains dormant until main grants desktop ownership.
         let control_video_track = video_track.clone();
         let stream_settings = video_settings.clone();
+        let video_output_refresh = desktop_output_refresh.subscribe();
         if !cfg!(test) {
             let mut active = desktop_activation.subscribe();
             let mut closed = peer_closed.subscribe();
+            let mut output_refresh = video_output_refresh;
             tokio::spawn(async move {
                 if !wait_for_desktop_activation(&mut active, &mut closed).await { return; }
                 let Some(streaming_pc) = streaming_pc.upgrade() else { return; };
@@ -420,7 +434,7 @@ impl WebRtcSession {
                 let (capture_size, capture_display, portal) = screen.as_ref().map_or(
                     (capture_size, capture_display, portal),
                     |screen| ((screen.width, screen.height), screen.display.clone(), screen.portal.clone()));
-                if let Err(e) = crate::video::stream_desktop(streaming_pc, video_track, capture_size, capture_display, portal, video_settings_rx, stream_settings, idr_request).await {
+                if let Err(e) = crate::video::stream_desktop(streaming_pc, video_track, capture_size, capture_display, portal, video_settings_rx, stream_settings, idr_request, output_refresh).await {
                     // A send racing the viewer's close fails with a misleading track error.
                     if matches!(state_pc.connection_state(), RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed) {
                         log::info!("Live desktop stream ended: peer connection closed ({})", e);
@@ -504,6 +518,7 @@ impl WebRtcSession {
             let channel_desktop_request=peer_desktop_request.clone();
             let channel_promotion_pending=peer_promotion_pending.clone();
             let channel_activation=peer_desktop_activation.subscribe();
+            let channel_output_refresh=desktop_output_refresh.subscribe();
             let channel_closed=peer_closed_signal.subscribe();
             let screen = control_capture.clone();
             let portal_desktop = portal_desktop.clone();
@@ -568,11 +583,32 @@ impl WebRtcSession {
                     let manager = portal_desktop.clone();
                     let channel = Arc::downgrade(&d);
                     let initial_screen = screen.clone();
+                    let mut output_refresh = channel_output_refresh;
+                    let mut output_refresh_open = true;
                     tokio::spawn(async move {
                         let mut health = tokio::time::interval(std::time::Duration::from_millis(100));
-                        loop {
+                        'requests: loop {
                             let request = tokio::select! {
                                 request = capture_rx.recv() => match request { Some(request) => request, None => break },
+                                changed = output_refresh.changed(), if output_refresh_open && settings_desktop_active.load(std::sync::atomic::Ordering::Acquire) => {
+                                    if changed.is_err() { output_refresh_open = false; continue; }
+                                    let active_screen = crate::current_desktop_capture(initial_screen.clone());
+                                    if active_screen.init_error.is_none() {
+                                        let input_size = (active_screen.width, active_screen.height);
+                                        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default().as_secs();
+                                        let next = || sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        if let Ok(sources) = crate::capture_setting::screen_sources(
+                                            next(), timestamp, input_size, settings.borrow().output, "Linux desktop") {
+                                            let _ = response_tx.send(sources);
+                                        }
+                                        let sync = crate::capture_setting::sync_payload(&settings.borrow(), input_size);
+                                        let _ = response_tx.send(crate::initialization::envelope(next(), timestamp, 25, &sync));
+                                    } else {
+                                        log::warn!("Desktop output refresh capture unavailable");
+                                    }
+                                    continue 'requests;
+                                }
                                 _ = health.tick() => {
                                     if channel.upgrade().is_none_or(|channel| matches!(
                                         channel.ready_state(),
@@ -1324,6 +1360,7 @@ impl WebRtcSession {
             input,
             desktop_active,
             desktop_activation,
+            desktop_output_refresh,
             peer_closed,
             input_session,
             desktop_request,

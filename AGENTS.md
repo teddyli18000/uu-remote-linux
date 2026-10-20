@@ -115,9 +115,9 @@ viewer does not reconnect them automatically.
 | `UU_INPUT_BACKEND` | `auto` (uinput on Wayland/portal when `/dev/uinput` is accessible, udev `uaccess` rule in README) / `uinput` / `native`. X11 keeps XTest (held-key autorepeat handling) |
 | Mac viewer Cmd | With 「使用 macOS 快捷键」 off the Mac viewer sends Cmd=VK_LWIN 0x5B, Option=0xA4, Ctrl=0xA2; connect header `controller_platform`=4 is macOS. For Mac controllers Cmd is held back: Cmd+C/V/A/F/X/Z → Ctrl+key (terminal: Cmd+C/V → Ctrl+Shift+C/V), other combos/alone → Super |
 | `UU_TERMINAL_SHORTCUTS=0` | disable Ctrl+V → Ctrl+Shift+V in focused X11 terminals (Mac Cmd and Ctrl both arrive as VK_LCONTROL) |
-| `contrib/virtual-desktop/` | Xvfb + session (`UU_VIRTUAL_SESSION`, `UU_VIRTUAL_BUS=user|private`) for monitorless hosts; serve it with `DISPLAY=:99` |
-| `UU_AUTO_VIRTUAL_DISPLAY=0` | opt out of automatic persistent same-session virtual output for X11; enabled when physical connector status confirms no monitor |
-| `UU_VIRTUAL_DISPLAY_MODE=xvfb` | opt into the independent legacy Xvfb desktop; default uses an existing Xorg virtual output (Intel VirtualHeads setup required) |
+| `contrib/virtual-desktop/` | Independent Xvfb + session (`UU_VIRTUAL_SESSION`, `UU_VIRTUAL_BUS=user|private`) for monitorless hosts; serve it with `DISPLAY=:99`; same-session helper details are in `SAME_SESSION.md` |
+| `UU_AUTO_VIRTUAL_DISPLAY=0` | opt out of automatic same-session i915 HDMI runtime force for X11; first activation requires all physical DRM connector states to be known disconnected |
+| `UU_VIRTUAL_DISPLAY_MODE=xvfb` | opt into the independent legacy Xvfb desktop; default same-session path may force one existing i915 HDMI connector through the packaged restricted helper; it never selects DP or creates a connector |
 | `UU_VIDEO_ENCODER` | `cpu`: libx264; `vaapi`: explicit Intel/AMD; `nvenc`: force; unset: NVENC→CPU only if `/proc/driver/nvidia/version` or `/dev/nvidia0` exists, else CPU (#10) |
 | `UU_VIDEO_CODEC=h264` | force H.264 even when the viewer negotiated H.265 (default: H.265 when both sides support it) |
 | `UU_FFMPEG_ROOT` | FFmpeg prefix (`bin/ffmpeg`, libs in `lib/x86_64-linux-gnu`) |
@@ -151,7 +151,7 @@ every 60 s.
 | `src/initialization.rs`, `src/control_protocol.rs`, `src/protocol.rs` | protobuf encoders/decoders for CONTROL |
 | `src/session_ice.rs`, `src/network_diagnostics.rs` | cloud ICE servers, address-free path diagnostics |
 | `src/desktop_backend.rs`, `src/wayland.rs`, `src/portal*.rs` | backend selection, Hyprland, GNOME/KDE portal |
-| `src/same_session_display.rs` | bounded RandR activation of existing Intel VirtualHeads outputs; never creates or replaces Xorg |
+| `src/same_session_display.rs` | bounded same-session RandR activation; i915 HDMI runtime force is delegated to the restricted helper; never creates or replaces Xorg |
 | `src/virtual_display.rs` | physical connector polling and debounced same-session virtual output; independent Xvfb only explicitly selected |
 | `c_engine/portal_eis.inc` | scaled GNOME input through the existing Portal session's EIS connection; all input must use EIS once connected |
 | `c_engine/x11_engine.c`, `c_engine/clipboard.c` | X11 capture/input/selection |
@@ -169,7 +169,7 @@ started a second full host server instead, so check that a subcommand exists in 
 It is a local diagnostic, not official-client acceptance. `src/x11_acceptance.rs` contains an opt-in
 Xvfb-only input/clipboard test; never run that fixture against a user's real desktop.
 
-`same-session-acceptance <synthetic-drm-dir> <output-dir> <hotplug|cold>` is account-free Xorg dummy acceptance, orchestrated by `tests/same_session_display.py`. It checks original Xorg/root/window/application identity and complete desktop panels. Its explicit DUMMY1 fixture is never accepted by normal host configuration. Intel hardware and GNOME cold boot still require actual target acceptance. Default automatic fallback enables an existing virtual RandR output on the original Xorg session; configure Intel VirtualHeads once (`contrib/virtual-desktop/SAME_SESSION.md`). Do not substitute a separate session when this output is missing. Same-session shutdown leaves the output and applications alive.
+`same-session-acceptance <synthetic-drm-dir> <output-dir> <hotplug|cold>` is account-free Xorg dummy acceptance, orchestrated by `tests/same_session_display.py`. It checks original Xorg/root/window/application identity and complete desktop panels. Its explicit DUMMY1 fixture is never accepted by normal host configuration. Dummy CI proves host control logic only; it does not establish sinkless i915 HDMI scanout, GNOME repaint, GDM monitorless startup, or target acceptance. The runtime helper requires exactly one i915 DRM card and all connector states known disconnected on first activation; if that card has multiple HDMI-A ports, it selects the lowest-numbered port. It never selects DP or creates a connector. Install the root-owned mode-4750 helper for the restricted local graphical-session group as documented in `contrib/virtual-desktop/SAME_SESSION.md`; keep the host itself unprivileged. No driver installation, replacement, switching, or Xorg driver configuration changes are allowed. The optional root oneshot can force the connector before `display-manager.service`, but does not change GDM or enable automatic login; the original GNOME Xorg session must still be started by existing setup. Same-session unplug handling is intended to keep active desktop connections alive without a user reconnect, but this requires target acceptance. Same-session shutdown leaves the forced output and applications alive; rollback is explicit.
 
 `virtual-display-acceptance <synthetic-drm-dir> <output-dir>` is legacy independent-Xvfb CI acceptance; select `UU_VIRTUAL_DISPLAY_MODE=xvfb` explicitly. It must
 run without DISPLAY/WAYLAND_DISPLAY and refuses `/sys` fixtures. Normal hosts never accept a DRM

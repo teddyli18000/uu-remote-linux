@@ -34,6 +34,7 @@ def acceptance_identity():
 
 def demote(uid, gid):
     if os.geteuid() == 0:
+        os.setgroups([])
         os.setgid(gid)
         os.setuid(uid)
 
@@ -57,7 +58,10 @@ def runner_env(base, display, authority):
         "DISPLAY": display,
         "XAUTHORITY": str(authority),
         "XDG_SESSION_TYPE": "x11",
-        "XDG_CURRENT_DESKTOP": "GNOME-Flashback:GNOME",
+        "XDG_CURRENT_DESKTOP": "ubuntu:GNOME",
+        "DESKTOP_SESSION": "ubuntu",
+        "GNOME_SHELL_SESSION_MODE": "ubuntu",
+        "LIBGL_ALWAYS_SOFTWARE": "1",
         "XDG_RUNTIME_DIR": str(base / "runtime"),
         "XDG_CONFIG_HOME": str(base / "config"),
         "XDG_CACHE_HOME": str(base / "cache"),
@@ -217,7 +221,7 @@ def wait_desktop(env, uid, gid, session, timeout=60):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if session.poll() is not None:
-            raise RuntimeError("GNOME Flashback session exited before the panel became ready")
+            raise RuntimeError("Ubuntu GNOME session exited before the shell became ready")
         processes = set()
         for entry in Path("/proc").iterdir():
             if not entry.name.isdigit():
@@ -236,12 +240,12 @@ def wait_desktop(env, uid, gid, session, timeout=60):
         except RuntimeError:
             wm = ""
         wm_id = re.search(r"window id # (0x[0-9a-fA-F]+)", wm)
-        if "gnome-panel" in processes and "metacity" in processes and wm_id:
+        if "gnome-shell" in processes and wm_id:
             wm_name = command_output(["xprop", "-id", wm_id.group(1), "_NET_WM_NAME"], env, uid, gid)
-            if "Metacity" in wm_name:
-                return {"window_manager_id": wm_id.group(1), "panel_process": True}
+            if "GNOME Shell" in wm_name:
+                return {"window_manager_id": wm_id.group(1), "desktop_shell_process": True}
         time.sleep(0.25)
-    raise RuntimeError("GNOME Flashback panel and Metacity window manager did not become ready")
+    raise RuntimeError("Ubuntu GNOME Shell/Mutter did not become ready")
 
 
 class XorgSession:
@@ -327,7 +331,7 @@ class XorgSession:
             require(not output_is_active(cold_snapshot, "DUMMY1"), "cold Xorg unexpectedly activated DUMMY1")
 
         self.session = popen(
-            ["dbus-run-session", "--", "gnome-session", "--session=gnome-flashback-metacity"],
+            ["dbus-run-session", "--", "gnome-session", "--session=ubuntu"],
             self.env, self.uid, self.gid, self.session_log,
         )
         self.desktop_state = wait_desktop(self.env, self.uid, self.gid, self.session)
@@ -354,7 +358,7 @@ class XorgSession:
             "window_id": window,
             "app_pid": self.app.pid,
             "window_manager_id": self.desktop_state["window_manager_id"],
-            "panel_process": self.desktop_state["panel_process"],
+            "desktop_shell_process": self.desktop_state["desktop_shell_process"],
             "initial_drm_physical_status": initial_status,
             "initial_randr_DUMMY0": output_header(xrandr_query(self.env, self.uid, self.gid), "DUMMY0"),
             "initial_randr_DUMMY1": output_header(xrandr_query(self.env, self.uid, self.gid), "DUMMY1"),
