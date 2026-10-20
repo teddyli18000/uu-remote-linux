@@ -474,6 +474,12 @@ impl DesktopOwner {
 }
 pub struct DesktopInputSession {input:std::sync::Arc<InputInjector>,id:u64}
 impl InputInjector {
+    /// Invalidate old desktop callbacks before changing the X11 target, while allowing a new lease.
+    pub fn suspend_desktop(&self) {
+        let mut owner=self.owner.lock().unwrap();
+        owner.current=0;owner.active=false;
+        self.release_held();
+    }
     pub fn shutdown(&self) {
         let mut owner=self.owner.lock().unwrap();
         owner.current=0;owner.active=false;owner.stopped=true;

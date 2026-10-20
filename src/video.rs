@@ -315,6 +315,9 @@ struct FfmpegSpec {
 impl FfmpegSpec {
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
+        if let Some(config) = crate::virtual_display::display_config() {
+            config.apply_to_command(command.as_std_mut());
+        }
         if let Some(path) = &self.ld_library_path { command.env("LD_LIBRARY_PATH", path); }
         if let Some(path) = &self.path { command.env("PATH", path); }
         command

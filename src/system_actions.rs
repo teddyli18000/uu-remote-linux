@@ -69,7 +69,9 @@ fn quiet(program: &str, args: &[&str]) -> bool {
 }
 
 fn detached(program: &str, args: &[&str]) -> bool {
-    Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+    let mut command = Command::new(program);
+    if let Some(config) = crate::virtual_display::display_config() { config.apply_to_command(&mut command); }
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().map(|mut child| { std::thread::spawn(move || child.wait()); true }).unwrap_or(false)
 }
 

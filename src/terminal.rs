@@ -20,6 +20,16 @@ mod acceptance_probe;
 
 pub use acceptance_probe::acceptance;
 
+/// Replace only local renderers when the host selects its persistent virtual desktop.
+/// PTYs, shells, remote sinks and scrollback remain owned by their original sessions.
+pub fn refresh_local_views() {
+    let sessions: Vec<_> = registry().lock().unwrap().values().cloned().collect();
+    for session in sessions {
+        if let Some(mut view) = session.view.lock().unwrap().take() { view.close_window(); }
+        session.ensure_view();
+    }
+}
+
 pub const OPEN: u8 = 1;
 pub const STDIN: u8 = 2;
 pub const RESIZE: u8 = 3;

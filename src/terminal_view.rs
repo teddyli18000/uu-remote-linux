@@ -260,7 +260,8 @@ pub(crate) fn spawn(session_id: u32, cols: u16, rows: u16) -> Option<View> {
     }
     #[cfg(all(not(test), uu_terminal_view))]
     {
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
+            && crate::virtual_display::display_config().is_none() {
             warn_unavailable("no graphical display is available");
             return None;
         }
@@ -274,16 +275,19 @@ pub(crate) fn spawn(session_id: u32, cols: u16, rows: u16) -> Option<View> {
                 return None;
             }
         };
-        let mut child = match Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .arg("__terminal-view")
             .arg(session_id.to_string())
             .arg(cols.to_string())
             .arg(rows.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
+            .stderr(Stdio::inherit());
+        if let Some(config) = crate::virtual_display::display_config() {
+            config.apply_to_command(&mut command);
+        }
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(_) => {
                 log::warn!(

@@ -4,7 +4,7 @@
 
 > **本仓库是 [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux) 的 AIC 自用 fork。**
 > 日常开发与自有发布使用 `main`，向上游贡献使用独立分支。下载见[本 fork Releases](https://github.com/teddyli18000/uu-remote-linux/releases)。
-> 当前 `v0.2.12-aic.2` 为预发布：保留 Ubuntu 18.04 GTK/VTE，修复会话列表刷新，并支持在已有终端连接上启用桌面，详见[发布说明](docs/release-notes/v0.2.12-aic.2.md)。
+> 当前 `v0.2.12-aic.3` 为预发布：无屏开机或运行中拔屏时自动补充持久虚拟桌面，观看时才编码传画面，详见[发布说明](docs/release-notes/v0.2.12-aic.3.md)。
 > 已在 WSL 验证列表刷新、远端终止、关闭本地窗口结束对应会话，以及先开终端再开桌面，详见[兼容与验收记录](docs/ubuntu-18.04.md)。本地可视化终端只读，命令从 Windows 的 UU 终端输入。车端仍需单独部署验收。
 > 本 fork 预发布仅提供 tar 包；Docker 镜像在后续稳定版发布。
 > 以下保留上游功能说明与署名；上游验证记录不代表本 fork 已完成全部实测。
@@ -218,6 +218,16 @@ install -Dm644 contrib/desktop/uu-remote-linux-viewer.desktop ~/.local/share/app
 **登录状态下的远程协助尚未用另一个账号实测**（同一账号的设备不能互相发起远程协助，这是官方限制）。
 
 ## 没有显示器的服务器
+
+**自动补屏（默认开启，X11）**：安装下面的运行依赖后，正常启动 `uuremote-server` 即可。程序检测物理显示器连接状态；无屏开机或运行中最后一块物理屏被拔掉后，自动创建 1920×1080 的 Xvfb 虚拟桌面。无需另装虚拟桌面 service 或写死 `DISPLAY=:99`。
+
+```sh
+sudo apt install xvfb xauth x11-utils dbus-x11 openbox
+```
+
+只在控制端打开桌面时采集、编码并发送画面；关闭观看窗口后，虚拟屏幕、桌面程序和终端会话继续运行。重新插屏不会立即销毁或切走已建立的虚拟桌面，停止主机服务才结束它。已有远程桌面在拔屏切换时关闭，需要重新连接；独立工具连接和 PTY 会话保留。已有本机终端可视化窗口会在虚拟桌面上重建，原 shell 不重启。
+
+`UU_AUTO_VIRTUAL_DISPLAY=0` 关闭自动补屏；`UU_VIRTUAL_SIZE`、`UU_VIRTUAL_SESSION` 可指定尺寸和桌面命令。自动模式使用独立会话总线，优先使用轻量桌面。显式 `UU_DESKTOP_BACKEND=none/wayland/portal/kms` 不会启动 Xvfb。物理连接状态未知时保留现有显示，不把黑屏、锁屏或休眠直接当作拔屏。Xvfb 是独立 X11 桌面，不能迁移实体桌面已有的任意 GUI 程序，也没有 GPU 加速。开机无人登录时还需为现有主机用户服务启用 `sudo loginctl enable-linger "$USER"`。
 
 **无头模式**：只要终端、文件传输和端口映射，不需要图形界面。在服务里加 `Environment=UU_DESKTOP_BACKEND=none`，
 再执行 `loginctl enable-linger $USER`，这样开机后不用登录，systemd 用户服务（以及 `XDG_RUNTIME_DIR`、用户 D-Bus）也会自动启动。

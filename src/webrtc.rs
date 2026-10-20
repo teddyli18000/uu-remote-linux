@@ -411,6 +411,11 @@ impl WebRtcSession {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {},
                         }
                     }
+                } else if crate::virtual_display::display_config().is_some() {
+                    match tokio::task::spawn_blocking(crate::capture::ScreenCapture::new).await {
+                        Ok(Ok(screen)) => Some(Arc::new(screen)),
+                        _ => { log::warn!("Virtual desktop capture unavailable"); return; },
+                    }
                 } else { None };
                 let (capture_size, capture_display, portal) = screen.as_ref().map_or(
                     (capture_size, capture_display, portal),
@@ -594,7 +599,7 @@ impl WebRtcSession {
                                         if channel.upgrade().is_none_or(|channel| channel.ready_state() != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open) { return; }
                                     }
                                 } else {
-                                    Some(initial_screen.clone())
+                                    Some(crate::current_desktop_capture(initial_screen.clone()))
                                 }
                             } else {
                                 Some(initial_screen.clone())
@@ -726,7 +731,7 @@ impl WebRtcSession {
                                         } => return,
                                     }
                                 }
-                            } else { screen };
+                            } else { crate::current_desktop_capture(screen) };
                             let bridge = if let Some(session)=screen.portal.clone() { crate::clipboard::start_portal(session) } else { crate::clipboard::start(screen.display.clone()) };
                             *clipboard_sink.lock().unwrap() = Some(bridge.incoming);
                             let clipboard_channel = channel.clone();
@@ -877,7 +882,7 @@ impl WebRtcSession {
                                         }
                                     }
                                 } else { snapshot.screen }
-                            } else { screen };
+                            } else { crate::current_desktop_capture(screen) };
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
                             let next_seq = || sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -952,7 +957,7 @@ impl WebRtcSession {
 
                 d.on_message(Box::new(move |msg: DataChannelMessage| {
                     // Keep the whole state: a cached screen waiting for a closed Portal is not ready for input.
-                    let (screen, desktop_ready) = portal_desktop.as_ref().map_or_else(|| (screen.clone(), true), |desktop| {
+                    let (screen, desktop_ready) = portal_desktop.as_ref().map_or_else(|| (crate::current_desktop_capture(screen.clone()), true), |desktop| {
                         let state = desktop.snapshot();
                         let ready = state.ready();
                         (state.screen, ready)

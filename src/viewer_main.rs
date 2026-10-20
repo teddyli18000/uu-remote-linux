@@ -9,6 +9,8 @@ use viewer::clipboard;
 #[path="clipboard_protocol.rs"] mod clipboard_protocol;
 #[path="clipboard_rich.rs"] mod clipboard_rich;
 #[cfg(test)] #[path="terminal.rs"] mod terminal;
+#[cfg(test)] #[path="virtual_display.rs"] mod virtual_display;
+#[cfg(test)] #[path="desktop_backend.rs"] mod desktop_backend;
 #[cfg(test)] #[path="file_trans.rs"] mod file_trans;
 #[cfg(test)] #[path="initialization.rs"] mod initialization;
 use viewer::{api::Api,rtc::ReadyPolicy,session::{Options,Session},wire::Shape};

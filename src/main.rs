@@ -2,6 +2,8 @@
 //! Zero-Wine, Zero-Python, Single-Binary, 5 Native Tools Integrated
 
 mod desktop_backend;
+mod virtual_display;
+mod virtual_display_acceptance;
 mod desktop_session;
 mod desktop_power;
 mod portal;
@@ -67,6 +69,19 @@ use webrtc::WebRtcSession;
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 enum RoomEvent { Signal(SignalingEvent), PromoteDesktop(String) }
 
+/// Tool peers can predate the one-way switch from an unplugged X11 desktop.
+/// Resolve their dormant desktop state only when ownership is actually granted.
+fn current_desktop_capture(screen: Arc<ScreenCapture>) -> Arc<ScreenCapture> {
+    if virtual_display::display_config().is_some_and(|config| config.display != screen.display) {
+        static CURRENT: std::sync::OnceLock<std::sync::Mutex<Option<Arc<ScreenCapture>>>> = std::sync::OnceLock::new();
+        let mut cached = CURRENT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(current) = cached.as_ref().filter(|current| current.init_error.is_none()) { return current.clone(); }
+        let current = Arc::new(ScreenCapture::new().unwrap_or_else(ScreenCapture::unavailable));
+        *cached = Some(current.clone());
+        current
+    } else { screen }
+}
+
 fn superseded_peer_ids(sessions: &HashMap<String, WebRtcSession>, ice: &str, desktop: bool) -> Vec<String> {
     sessions.iter().filter(|(id, peer)| id.as_str() == ice || (desktop && peer.is_desktop()))
         .map(|(id, _)| id.clone()).collect()
@@ -84,7 +99,7 @@ async fn promote_desktop_peer(sessions: &mut HashMap<String, WebRtcSession>, ice
     }
     if target.is_desktop() { target.clear_desktop_request(); return Ok(false); }
     if desktop_backend::headless() { target.clear_desktop_request(); return Err("desktop capture is unavailable in headless mode".into()); }
-    if portal.is_none() && target.capture.init_error.is_some() {
+    if portal.is_none() && virtual_display::display_config().is_none() && target.capture.init_error.is_some() {
         target.clear_desktop_request();
         return Err("desktop capture is unavailable for this peer".into());
     }
@@ -92,6 +107,10 @@ async fn promote_desktop_peer(sessions: &mut HashMap<String, WebRtcSession>, ice
         .map(|(id, _)| id.clone()).collect();
     for id in old_desktops {
         if let Some(old) = sessions.remove(&id) { let _ = old.pc.close().await; }
+    }
+    if portal.is_none() && sessions.get(ice).is_some_and(|peer| current_desktop_capture(peer.capture.clone()).init_error.is_some()) {
+        sessions[ice].clear_desktop_request();
+        return Err("virtual desktop capture is unavailable for this peer".into());
     }
     let capture_portal = sessions.get(ice).and_then(|peer| peer.capture.portal.clone());
     if let Some(portal) = portal { portal.begin(); }
@@ -204,8 +223,22 @@ fn show_running_host() -> Result<(), Box<dyn std::error::Error>> {
     Err(Box::new(std::process::Command::new("/proc/self/exe").env("UU_SHOW_WINDOW", "1").exec()))
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("virtual-display-acceptance") {
+        return virtual_display_acceptance::run();
+    }
+    if std::env::args().nth(1).is_none() || std::env::args().nth(1).as_deref() == Some("assist") {
+        // Xlib/GTK and child processes must inherit a stable authority file before threads exist.
+        if let Err(error) = virtual_display::prepare_startup() {
+            eprintln!("Automatic virtual display unavailable: {error}");
+        }
+    }
+    let result = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run_host());
+    virtual_display::shutdown();
+    result
+}
+
+async fn run_host() -> Result<(), Box<dyn std::error::Error>> {
     // A local terminal renderer has no cloud/account initialization and never starts a shell.
     if std::env::args().nth(1).as_deref() == Some("__terminal-view") {
         let args: Vec<String> = std::env::args().skip(2).collect();
@@ -473,9 +506,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(target_os="linux"))]
         let _ = tokio::signal::ctrl_c().await;
-        if !assist_enabled { shutdown_input.shutdown(); virtual_audio::disable(); terminal::shutdown_all(); std::process::exit(0); }
+        if !assist_enabled { shutdown_input.shutdown(); virtual_audio::disable(); terminal::shutdown_all(); virtual_display::shutdown(); std::process::exit(0); }
         let _ = signal_tx.send(true);
     });
+    let webrtc_sessions: Arc<Mutex<HashMap<String, WebRtcSession>>> = Arc::new(Mutex::new(HashMap::new()));
+    let display_task = watch_virtual_display(webrtc_sessions.clone(), input.clone(), shutdown.clone());
     let mut assist = if assist_enabled { Some(assist::Assist::start(&mut shutdown, unified).await?) } else { None };
     if let Some(session) = assist.as_ref().filter(|_| unified) {
         present_on_usr1(session.ui());
@@ -490,7 +525,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-    let webrtc_sessions: Arc<Mutex<HashMap<String, WebRtcSession>>> = Arc::new(Mutex::new(HashMap::new()));
     let (mut commands, command_task) = match assist.as_ref() {
         Some(s) => { let (rx, task) = s.commands(shutdown_tx); (rx, Some(task)) },
         None => (tokio::sync::mpsc::channel(1).1, None),
@@ -500,6 +534,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = serve(capture, input.clone(), &mut shutdown, &mut assist, &mut commands, webrtc_sessions.clone()) => result,
         _ = immediate_shutdown.changed() => Ok(()),
     };
+    display_task.abort();
     if let Some(task) = command_task { task.abort(); }
     // One exit path for commands, signals, transport failures and UI failures.
     if let Some(session) = assist.as_mut() { session.allowed = false; }
@@ -515,6 +550,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if RESTART.load(std::sync::atomic::Ordering::SeqCst) { restart_host(); }
     revoke.map_err(|_| "assist disabled locally, but cloud cancel failed; cloud revocation is unverified")?;
     Ok(())
+}
+
+fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, input: Arc<InputInjector>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut failures = 0u32;
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                _ = tick.tick() => {},
+            }
+            let config = match virtual_display::start_if_disconnected().await {
+                Ok(Some(config)) => { failures=0; config },
+                Ok(None) => continue,
+                Err(error) => {
+                    // Missing dependencies remain actionable without flooding a service journal.
+                    if failures==0 || failures%30==0 { log::warn!("Automatic virtual display unavailable: {error}"); }
+                    failures=failures.saturating_add(1);
+                    continue;
+                },
+            };
+            if virtual_display::display_config().as_ref()==Some(&config) { continue; }
+            let mut peers=sessions.lock().await;
+            let desktops: Vec<_>=peers.iter().filter(|(_,peer)|peer.is_desktop()).map(|(id,_)|id.clone()).collect();
+            for id in desktops { if let Some(old)=peers.remove(&id) { let _=old.pc.close().await; } }
+            input.suspend_desktop();
+            config.activate();
+            let switched=tokio::task::spawn_blocking(|| {
+                let screen=ScreenCapture::new()?;
+                terminal::refresh_local_views();
+                Ok::<_,String>((screen.width,screen.height))
+            }).await;
+            match switched {
+                Ok(Ok((width,height))) => log::info!("Persistent virtual desktop selected: width={width} height={height}; reconnect desktop viewer"),
+                Ok(Err(error)) => log::warn!("Virtual display is running but capture unavailable: {error}"),
+                Err(_) => log::warn!("Virtual display capture worker failed"),
+            }
+        }
+    })
 }
 
 async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutdown: &mut tokio::sync::watch::Receiver<bool>,
@@ -760,6 +836,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                     if let Some(s) = assist.as_mut() { s.tick()?; }
 
                     if soac.msg_type == "offer" {
+                        capture = current_desktop_capture(capture);
                         let (capture_type,transport) = capture_types.remove(&ice).or_else(|| next_capture_type.take()).unwrap_or((1,crate::session_ice::SessionIce::default()));
                         // CaptureType: 0 unknown, 1 desktop, 2 window; 5 file transfer, 8 terminal, 9 port mapping.
                         let desktop = capture_type <= 2;

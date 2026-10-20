@@ -4,7 +4,7 @@
 
 > **This is the AIC personal fork of [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux).**
 > Our development and releases use `main`; upstream contributions use separate focused branches. Download from [this fork's Releases](https://github.com/teddyli18000/uu-remote-linux/releases).
-> `v0.2.12-aic.2` is a prerelease retaining Ubuntu 18.04 GTK/VTE support, fixing session-list refresh, and enabling desktop on an existing terminal connection; see the [release notes](docs/release-notes/v0.2.12-aic.2.md).
+> `v0.2.12-aic.3` is a prerelease adding a persistent virtual desktop when booting without a monitor or unplugging the last monitor. Frames are encoded only on request; see the [release notes](docs/release-notes/v0.2.12-aic.3.md).
 > WSL checks cover list refresh, remote termination, ending the corresponding session by closing its local window, and opening the terminal before the desktop. See the [compatibility and acceptance record](docs/ubuntu-18.04.md). The local terminal view is read-only; enter commands through the Windows UU terminal. Vehicle deployment and acceptance remain separate.
 > Our prerelease publishes tarballs only; Docker images are planned for stable releases.
 > Upstream descriptions and attribution are retained below; their validation records do not establish acceptance of this fork.
@@ -254,6 +254,12 @@ signing in and out. **Remote assistance while signed in has not yet been tested 
 the same account cannot assist each other, an official restriction).
 
 ## Servers without a monitor
+
+**Automatic virtual display (enabled by default for X11)**: install `xvfb xauth x11-utils dbus-x11 openbox`, then start the host normally. A monitorless boot or unplugging the last physical monitor creates a persistent 1920×1080 Xvfb desktop. No separate virtual-desktop unit or fixed `DISPLAY=:99` is needed.
+
+Capture/encoding starts only when a viewer requests desktop access. Closing the viewer leaves the virtual screen, applications and PTYs running. Replugging a monitor does not tear down or switch away from the virtual desktop; stopping the host ends it. An active desktop peer closes during the unplug transition and must reconnect; independent tool peers and PTYs survive. Local terminal renderers reopen on the virtual desktop without replacing their shells.
+
+Set `UU_AUTO_VIRTUAL_DISPLAY=0` to disable, or use `UU_VIRTUAL_SIZE` / `UU_VIRTUAL_SESSION` to choose size/session. Automatic fallback uses a private session bus and prefers a lightweight desktop. Explicit `none`, `wayland`, `portal` and `kms` backends opt out. Unknown connector status does not count as unplugged, nor do blanking, locking or sleep. This is a separate X11 desktop: existing physical-desktop GUI applications cannot be moved automatically, and Xvfb has no GPU acceleration. For an unattended boot, enable linger for the existing host user service: `sudo loginctl enable-linger "$USER"`.
 
 **Headless mode** (terminal, file transfer and port mapping only): add `Environment=UU_DESKTOP_BACKEND=none` to the
 service and run `loginctl enable-linger $USER`, so the systemd user manager (with `XDG_RUNTIME_DIR` and the user D-Bus)

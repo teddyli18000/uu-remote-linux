@@ -12,6 +12,7 @@ use tokio::sync::watch;
 #[cfg(target_os = "linux")]
 extern "C" {
     fn x11_cursor_open(display_name: *const libc::c_char) -> libc::c_int;
+    fn x11_cursor_close();
     fn x11_cursor_wait(timeout_ms: libc::c_int) -> libc::c_int;
     fn x11_cursor_poll(pixels: *mut u32, max_pixels: libc::c_int, width: *mut libc::c_int, height: *mut libc::c_int,
         hot_x: *mut libc::c_int, hot_y: *mut libc::c_int, force: libc::c_int) -> libc::c_int;
@@ -116,12 +117,25 @@ pub fn monitor(display: &str) -> watch::Receiver<Option<Arc<CursorImage>>> {
 #[cfg(target_os = "linux")]
 fn start_thread(display: String, tx: watch::Sender<Option<Arc<CursorImage>>>) {
     let spawned = std::thread::Builder::new().name("cursor-shape".into()).spawn(move || {
-        let Ok(name) = std::ffi::CString::new(display) else { return };
+        let mut display = display;
+        let Ok(name) = std::ffi::CString::new(display.clone()) else { return };
         let opened = unsafe { x11_cursor_open(name.as_ptr()) };
         if opened != 0 { log::warn!("Cursor shape monitor unavailable: {}", opened); return; }
         let mut pixels = vec![0u32; MAX_EDGE * MAX_EDGE];
         let mut force = 1;
         loop {
+            if let Some(config) = crate::virtual_display::display_config().filter(|config| config.display != display) {
+                let Ok(name) = std::ffi::CString::new(config.display.clone()) else { return };
+                // This thread owns the cursor connection, including its replacement.
+                unsafe { x11_cursor_close(); }
+                tx.send_replace(None);
+                if unsafe { x11_cursor_open(name.as_ptr()) } != 0 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+                display = config.display;
+                force = 1;
+            }
             let (mut w, mut h, mut x, mut y) = (0, 0, 0, 0);
             let result = unsafe { x11_cursor_poll(pixels.as_mut_ptr(), pixels.len() as i32, &mut w, &mut h, &mut x, &mut y, force) };
             if result == 1 {
