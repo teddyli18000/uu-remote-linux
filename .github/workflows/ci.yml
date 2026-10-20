@@ -48,7 +48,7 @@ jobs:
                 libx11-dev libxext-dev libxtst-dev libxfixes-dev libgtk-3-dev libvte-2.91-dev ffmpeg \
                 xvfb openbox xauth x11-utils dbus-x11 xdotool python3 \
                 xserver-xorg-core xserver-xorg-video-dummy x11-xserver-utils x11-apps \
-                gnome-session-flashback gnome-panel metacity xserver-xorg-dev xutils-dev libtool xz-utils
+                gnome-session-flashback gnome-panel metacity indicator-applet-complete gnome-backgrounds xserver-xorg-dev xutils-dev libtool xz-utils
               sh tests/install_ci_dummy.sh
               pkg-config --modversion gtk+-3.0
               pkg-config --modversion vte-2.91

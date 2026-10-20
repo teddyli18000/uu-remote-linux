@@ -455,9 +455,14 @@ def run_helper(binary, session, mode):
         # Synthetic display only: retain effective RandR state and the failing operation's
         # server reply. These diagnostics never run against an operator's desktop.
         diagnostics = []
-        for args in (["--query"], ["--output", "DUMMY1", "--mode", "uu-remote-1024x768-60", "--primary", "--pos", "0x0"], ["--query"]):
+        _, timings = cvt_modeline()
+        operations = [["--query"], ["--newmode", "uu-remote-1024x768-60"] + timings,
+                      ["--addmode", "DUMMY1", "uu-remote-1024x768-60"],
+                      ["--output", "DUMMY1", "--mode", "uu-remote-1024x768-60", "--primary", "--pos", "0x0"],
+                      ["--output", "DUMMY1", "--mode", MODE, "--primary", "--pos", "0x0"], ["--query"]]
+        for args in operations:
             try:
-                diagnostics.append(command_output(["xrandr"] + args, session.env, session.uid, session.gid))
+                diagnostics.append(command_output(["xrandr"] + args + ["--display", session.display], session.env, session.uid, session.gid))
             except RuntimeError as error:
                 diagnostics.append(str(error))
         (artifact_dir / "randr-failure.log").write_text("\n".join(diagnostics), encoding="utf-8")
