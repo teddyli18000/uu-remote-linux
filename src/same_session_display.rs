@@ -199,8 +199,6 @@ pub fn ensure(
             "--primary".into(),
             "--pos".into(),
             "0x0".into(),
-            "--display".into(),
-            display.into(),
         ];
         if run_xrandr(&reposition, display, authority).is_ok_and(|output| output.status.success())
             && verify_output(display, authority, &target, acceptance_output, current_size)?
@@ -211,7 +209,7 @@ pub fn ensure(
     }
 
     let preferred_mode = preferred.mode_name();
-    let set_preferred = output_mode_args(&target, &preferred_mode, display);
+    let set_preferred = output_mode_args(&target, &preferred_mode);
     if run_xrandr(&set_preferred, display, authority).is_ok_and(|output| output.status.success())
         && verify_output(display, authority, &target, acceptance_output, preferred)?
     {
@@ -222,20 +220,13 @@ pub fn ensure(
     let custom_mode = format!("uu-remote-{}x{}-60", preferred.width, preferred.height);
     let mut new_mode = vec!["--newmode".into(), custom_mode.clone()];
     new_mode.extend(modeline);
-    new_mode.extend(["--display".into(), display.into()]);
     // The deterministic mode name can already exist after a prior run. Let the final mode set
     // decide whether the existing server-side mode is usable.
     let _ = run_xrandr(&new_mode, display, authority);
 
-    let add_mode = [
-        "--addmode".into(),
-        target.clone(),
-        custom_mode.clone(),
-        "--display".into(),
-        display.into(),
-    ];
+    let add_mode = ["--addmode".into(), target.clone(), custom_mode.clone()];
     let _ = run_xrandr(&add_mode, display, authority);
-    let set_custom = output_mode_args(&target, &custom_mode, display);
+    let set_custom = output_mode_args(&target, &custom_mode);
     if run_xrandr(&set_custom, display, authority).is_ok_and(|output| output.status.success())
         && verify_output(display, authority, &target, acceptance_output, preferred)?
     {
@@ -249,12 +240,7 @@ pub fn ensure(
 }
 
 fn query_snapshot(display: &str, authority: Option<&Path>) -> Result<Snapshot, String> {
-    let query = run_xrandr(
-        &["--query".into(), "--display".into(), display.into()],
-        display,
-        authority,
-    )
-    .map_err(|_| {
+    let query = run_xrandr(&["--query".into()], display, authority).map_err(|_| {
         "cannot query same-session XRandR outputs; check the display and Xauthority".to_string()
     })?;
     if !query.status.success() {
@@ -284,7 +270,7 @@ fn verify_output(
         }))
 }
 
-fn output_mode_args(output: &str, mode: &str, display: &str) -> Vec<String> {
+fn output_mode_args(output: &str, mode: &str) -> Vec<String> {
     vec![
         "--output".into(),
         output.into(),
@@ -293,8 +279,6 @@ fn output_mode_args(output: &str, mode: &str, display: &str) -> Vec<String> {
         "--primary".into(),
         "--pos".into(),
         "0x0".into(),
-        "--display".into(),
-        display.into(),
     ]
 }
 
@@ -434,7 +418,15 @@ fn validate_display(display: &str) -> Result<(), String> {
 }
 
 fn run_xrandr(args: &[String], display: &str, authority: Option<&Path>) -> std::io::Result<Output> {
-    run_bounded("xrandr", args, Some((display, authority)))
+    let args = xrandr_args(display, args);
+    run_bounded("xrandr", &args, Some((display, authority)))
+}
+
+fn xrandr_args(display: &str, args: &[String]) -> Vec<String> {
+    let mut full_args = Vec::with_capacity(args.len() + 2);
+    full_args.extend(["--display".into(), display.into()]);
+    full_args.extend_from_slice(args);
+    full_args
 }
 
 fn run_bounded(

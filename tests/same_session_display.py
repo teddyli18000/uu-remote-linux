@@ -462,7 +462,7 @@ def run_helper(binary, session, mode):
                       ["--output", "DUMMY1", "--mode", MODE, "--primary", "--pos", "0x0"], ["--query"]]
         for args in operations:
             try:
-                diagnostics.append(command_output(["xrandr"] + args + ["--display", session.display], session.env, session.uid, session.gid))
+                diagnostics.append(command_output(["xrandr", "--display", session.display] + args, session.env, session.uid, session.gid))
             except RuntimeError as error:
                 diagnostics.append(str(error))
         (artifact_dir / "randr-failure.log").write_text("\n".join(diagnostics), encoding="utf-8")
