@@ -117,6 +117,14 @@ Ubuntu 18.04 release 测试 193 passed、0 failed、6 ignored，构建通过。�
 
 新文件经 `ldd` 和 `help` 检查后，原子覆盖 `~/.local/bin/uuremote-server`，重启原有 `uuremote-native.service`。旧版 `~/.local/share/uuremote/releases/8721eeb/uuremote-server` 保留供回退。登录配置校验前后一致，未更改服务配置、系统依赖或 ROS。部署后确认服务 enabled/active/running、NRestarts=0、云端 ready、SSH 正常，部署以来 ERROR 级日志为 0。尚未完成此次车端更新后的官方客户端交互验收；WSL 验收不替代实车结果。
 
+### 2026-10-20：覆盖安装 v0.2.12-aic.3
+
+经用户授权，安装 GitHub Release 的 Ubuntu 18.04 包；安装包 SHA256 `65fe3a06785eff1349e2cfed728e1ad18aa821b2479de16e78e66d64b3eba5c8` 与发布校验文件和 asset digest 一致，运行进程 SHA256 为 `a30cfff40e342d5a3e25d24e1b0031a468207da06cb46264e50c85b4f4751547`。`ldd` 无缺失，`help` 可运行。用户在车端补装 `xvfb`、`openbox`，部署前确认 Xvfb、xauth、xdpyinfo、dbus-run-session、openbox-session 均可用；用户 linger 已为 yes。
+
+旧 aic.2 二进制及原服务定义保留在 `~/.local/share/uuremote/releases/v0.2.12-aic.2/`。原子覆盖 `~/.local/bin/uuremote-server`，新增 `~/.config/systemd/user/uuremote-native.service.d/20-auto-virtual-display.conf`，清空旧的实体 Xauthority/`:0` 启动前检查，交由 aic.3 自行选择物理或虚拟显示。沿用登录、编码和其他服务配置；登录配置校验前后一致。若回退 aic.2，须同时移除此 drop-in 并执行用户服务 daemon-reload。
+
+UTC 11:38:37 确认服务 enabled/active/running、NRestarts=0、云端 CONNECTED/ready、当前 X11 可访问；SSH 与 SDAutoLogin 服务正常，部署后的 ERROR 级日志为 0。本次启动时 DP-1 为 connected，未人为拔屏或重启整车；无屏开机、实际热插拔及官方客户端交互尚待现场验收。本机临时安装包已清理，未升级系统、ROS 或显卡配置。
+
 ### 操作步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
