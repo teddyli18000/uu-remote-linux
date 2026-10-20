@@ -62,6 +62,8 @@ jobs:
               binary=target/release/uuremote-server
               fixture_status=0
               python3 tests/auto_virtual_display.py "$binary" /workspace/virtual-display-acceptance || fixture_status=$?
+              mkdir -p /run/dbus
+              dbus-daemon --system --fork
               python3 tests/same_session_display.py "$binary" /workspace/same-session-acceptance || fixture_status=$?
               test "$fixture_status" -eq 0
               ldd_output=/tmp/uuremote-server.ldd

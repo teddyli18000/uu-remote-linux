@@ -37,6 +37,8 @@ jobs:
               libxtst6 libxfixes3 libvte-2.91-0 ffmpeg xauth x11-utils x11-xserver-utils \
               xdotool dbus-x11 python3 gnome-session-flashback gnome-panel metacity
             sh tests/install_ci_dummy.sh
+            mkdir -p /run/dbus
+            dbus-daemon --system --fork
             python3 tests/same_session_display.py prebuilt/uuremote-server /workspace/same-session-diagnostic
           '
       - uses: actions/upload-artifact@v4
