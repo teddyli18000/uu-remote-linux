@@ -27,7 +27,7 @@ ldd target/release/uuremote-server
 
 主动关闭采用渲染器到主机的独立状态字节 6，由 GTK `delete-event` 发出；EOF、渲染器被清理或故障不会发送此请求。主机结束对应 shell 及独立前台进程组，沿用已有 EXIT/列表通知流程。Ubuntu 18.04 release 测试 192 passed、0 failed、6 ignored；新增真实 PTY 检查覆盖关闭时前台命令仍在运行及另一个会话保持存活，独立 Xvfb 上实际发送 `WM_DELETE_WINDOW` 也确认状态 6 和渲染器正常退出。
 
-`484f7df` 在 WSL 上完成 Windows 客户端验收：先保持桌面连接，创建两个终端，再在 WSL 桌面点 × 关闭其中一个本机窗口。用户确认对应条目消失，另一个仍正常。日志在 UTC 2026-10-19 17:32:24 显示本机关闭请求、对应 shell 退出、变化通知、随后 LIST 数量从 2 变成 1；另一个会话继续收到 RESIZE。该行为仅部署到 WSL，车端和 `v0.2.12-aic.1` 发布包未更新。
+`484f7df` 在 WSL 上完成 Windows 客户端验收：先保持桌面连接，创建两个终端，再在 WSL 桌面点 × 关闭其中一个本机窗口。用户确认对应条目消失，另一个仍正常。日志在 UTC 2026-10-19 17:32:24 显示本机关闭请求、对应 shell 退出、变化通知、随后 LIST 数量从 2 变成 1；另一个会话继续收到 RESIZE。当时仅部署到 WSL；后续车端更新见下方记录，`v0.2.12-aic.1` 发布包仍保留旧行为。
 
 ## 验证记录
 
@@ -110,6 +110,14 @@ Ubuntu 18.04 release 测试 193 passed、0 failed、6 ignored，构建通过。�
 运行中二进制 SHA256 为 `36de7df45db7f69a321d8ebbb48b983dfecca6d45cbba518da9fd5ca736cc936`，对应提交的 GitHub CI 通过。此前桌面优先的路径已由用户确认桌面与终端同时正常。这些结果仍仅覆盖 WSL X11、CPU H.264、禁用音频的测试设置；车端和 `aic.1` 发布包未更新。
 
 ## 车端部署步骤
+
+### 2026-10-20：覆盖安装 v0.2.12-aic.2
+
+经用户授权，将 GitHub Release 的 `uu-remote-linux-v0.2.12-aic.2-x86_64-ubuntu18.04.tar.gz` 安装到车端。安装包 SHA256 为 `70adc3909a08a4c7b05fe544abe071e505bd62215d6c1d99488d79acc8394cab`，与发布校验文件及 GitHub asset digest 一致。二进制 SHA256 为 `5997767677927f3fa39e5d10d0c24431e2b8f6798a2589855ded6aeb4f62f635`，与运行进程一致。
+
+新文件经 `ldd` 和 `help` 检查后，原子覆盖 `~/.local/bin/uuremote-server`，重启原有 `uuremote-native.service`。旧版 `~/.local/share/uuremote/releases/8721eeb/uuremote-server` 保留供回退。登录配置校验前后一致，未更改服务配置、系统依赖或 ROS。部署后确认服务 enabled/active/running、NRestarts=0、云端 ready、SSH 正常，部署以来 ERROR 级日志为 0。尚未完成此次车端更新后的官方客户端交互验收；WSL 验收不替代实车结果。
+
+### 操作步骤
 
 1. 在车端只读核对当前会话、既有服务和二进制路径；不要硬编码其它机器的 DISPLAY/XAUTHORITY。保留 Ubuntu、glibc、ROS、Python、FFmpeg 和 NoMachine。
 2. 获得部署授权后，安装缺少的系统运行库（尤其 `libvte-2.91-0`）。先把本次 Bionic 构建的二进制传到临时路径，运行 `ldd`，确认无缺失库。
