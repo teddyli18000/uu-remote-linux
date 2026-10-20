@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HELPER_NAME=uuremote-display-helper
+HELPER_NAME=uu-display-helper
 HELPER_DEST=/usr/local/libexec/uuremote-display-helper
 UNIT_NAME=uuremote-display-helper.service
 UNIT_DEST=/etc/systemd/system/uuremote-display-helper.service

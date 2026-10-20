@@ -106,6 +106,12 @@ jobs:
                 "$candidate_dir/contrib/virtual-desktop/uuremote-display-helper.service"
               chmod 0755 "$candidate_dir/contrib/virtual-desktop/uu-display-helper" \
                 "$candidate_dir/contrib/virtual-desktop/uu-display-setup"
+              useradd --system --user-group --no-create-home uu-display-ci
+              bash "$candidate_dir/contrib/virtual-desktop/uu-display-setup" install uu-display-ci
+              test "$(stat -c %u:%g:%a /usr/local/libexec/uuremote-display-helper)" \
+                = "0:$(id -g uu-display-ci):4750"
+              cmp "$candidate_dir/contrib/virtual-desktop/uu-display-helper" \
+                /usr/local/libexec/uuremote-display-helper
               tar -czf "/workspace/target/ubuntu18.04/candidate/$candidate_name.tar.gz" \
                 -C /workspace/target/ubuntu18.04/candidate "$candidate_name"
               (cd /workspace/target/ubuntu18.04/candidate && \

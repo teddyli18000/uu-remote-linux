@@ -10,12 +10,16 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{capture::ScreenCapture, virtual_display::{DisplayConfig, VirtualDisplayManager}};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+const MAGENTA_PIXEL_THRESHOLD: usize = 1_000;
+const REPAINT_TIMEOUT: Duration = Duration::from_secs(15);
+const REPAINT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 fn require(ok: bool, message: &'static str) -> Result<()> {
     if ok { Ok(()) } else { Err(message.into()) }
@@ -93,21 +97,55 @@ fn canonical_fixture(path: &Path) -> Result<PathBuf> {
     Ok(fixture)
 }
 
-fn capture_png(config: &DisplayConfig, path: &Path) -> Result<(u32, u32)> {
+fn magenta_pixel_count(bgra: &[u8]) -> usize {
+    bgra.chunks_exact(4)
+        .filter(|pixel| pixel[2] >= 230 && pixel[1] <= 40 && pixel[0] >= 230)
+        .count()
+}
+
+fn save_capture_png(mut bgra: Vec<u8>, width: u32, height: u32, path: &Path) -> Result<()> {
     use std::io::Write;
-    let screen = ScreenCapture::new()?;
-    require(screen.display == config.display, "capture opened a different X display")?;
-    require(screen.width > 0 && screen.height > 0, "Xorg capture dimensions are empty")?;
-    let mut bgra = screen.capture_frame()?;
-    require(bgra.len() == screen.width as usize * screen.height as usize * 4, "Xorg capture frame size is invalid")?;
     for pixel in bgra.chunks_exact_mut(4) {
         pixel.swap(0, 2);
         pixel[3] = 255;
     }
-    let png = crate::cursor::encode_png(screen.width, screen.height, &bgra);
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let png = crate::cursor::encode_png(width, height, &bgra);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
     file.write_all(&png)?;
-    Ok((screen.width, screen.height))
+    Ok(())
+}
+
+fn capture_png(config: &DisplayConfig, path: &Path) -> Result<(u32, u32)> {
+    let screen = ScreenCapture::new()?;
+    require(screen.display == config.display, "capture opened a different X display")?;
+    require(screen.width > 0 && screen.height > 0, "Xorg capture dimensions are empty")?;
+    let expected_size = screen.width as usize * screen.height as usize * 4;
+    let deadline = Instant::now() + REPAINT_TIMEOUT;
+    loop {
+        let bgra = screen.capture_frame()?;
+        require(
+            bgra.len() == expected_size,
+            "Xorg capture frame size is invalid",
+        )?;
+        let magenta_pixels = magenta_pixel_count(&bgra);
+        if magenta_pixels > MAGENTA_PIXEL_THRESHOLD {
+            save_capture_png(bgra, screen.width, screen.height, path)?;
+            return Ok((screen.width, screen.height));
+        }
+        if Instant::now() >= deadline {
+            save_capture_png(bgra, screen.width, screen.height, path)?;
+            return Err(format!(
+                "Xorg repaint timed out after {} ms: synthetic magenta window had {} visible pixels (expected >{})",
+                REPAINT_TIMEOUT.as_millis(),
+                magenta_pixels,
+                MAGENTA_PIXEL_THRESHOLD,
+            ).into());
+        }
+        thread::sleep(REPAINT_POLL_INTERVAL);
+    }
 }
 
 fn ffmpeg_idle() -> bool {
