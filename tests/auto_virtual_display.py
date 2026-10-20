@@ -20,6 +20,7 @@ REQUIRED_FLAGS = (
     "cold_boot_started",
     "ffmpeg_idle_before_probes",
     "ffmpeg_idle_after_probes",
+    "host_shutdown_released_display",
 )
 
 
@@ -154,22 +155,33 @@ def main():
             }
         )
         command = [str(binary), "virtual-display-acceptance", str(fixture), str(output_dir)]
-        result = subprocess.run(command, env=env, universal_newlines=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        if result.returncode != 0:
-            stderr_tail = "\n".join(result.stderr.splitlines()[-40:])[-4000:]
+        # Files preserve the last fixture stage even if a descendant retains inherited streams.
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            process = subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr)
+            try:
+                returncode = process.wait(timeout=180)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                returncode = 124
+            stdout.seek(0)
+            stderr.seek(0)
+            output = stdout.read().decode("utf-8", errors="replace")
+            diagnostic = stderr.read().decode("utf-8", errors="replace")
+        if returncode != 0:
+            stderr_tail = "\n".join(diagnostic.splitlines()[-40:])[-4000:]
             (artifact_dir / "acceptance.log").write_text(
                 "virtual-display acceptance helper failed\n"
-                f"exit_code={result.returncode}\n"
+                f"exit_code={returncode}\n"
                 f"stderr_tail:\n{stderr_tail}\n",
                 encoding="utf-8",
             )
-            print(f"virtual-display acceptance helper exited {result.returncode}", file=sys.stderr)
+            print(f"virtual-display acceptance helper exited {returncode}", file=sys.stderr)
             if stderr_tail:
                 print(stderr_tail, file=sys.stderr)
-            return result.returncode
+            return returncode
 
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        lines = [line for line in output.splitlines() if line.strip()]
         if not lines:
             raise RuntimeError("helper did not emit its final JSON result")
         report = json.loads(lines[-1])

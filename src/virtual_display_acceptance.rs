@@ -57,26 +57,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let manager=VirtualDisplayManager::with_drm_root(&fixture);
     manager.prepare_environment()?;
     if args.len()==3 {
+        eprintln!("virtual-display fixture: cold boot starting");
         require(args[2]=="--cold", "unknown virtual display acceptance mode")?;
         status(&fixture, "disconnected\n")?;
         let config=manager.prepare_startup()?.ok_or("cold boot did not create fallback")?;
         config.activate();
         let screen=ScreenCapture::new()?;
         require(screen.width>0 && screen.height>0, "cold boot capture unavailable")?;
+        eprintln!("virtual-display fixture: cold capture ready; cleaning up");
         println!("{}",serde_json::json!({"cold_boot_started":true}));
         return Ok(());
     }
     // Separate process: an actual cold start, not a reused manager or inherited X display.
-    let cold=Command::new(std::env::current_exe()?).arg("virtual-display-acceptance")
+    eprintln!("virtual-display fixture: running cold boot subprocess");
+    let mut cold=Window(Command::new(std::env::current_exe()?).arg("virtual-display-acceptance")
         .arg(&fixture).arg(&output).arg("--cold").env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY")
-        .stdin(Stdio::null()).output()?;
-    if !cold.status.success() {
-        // This child has no account or cloud path; diagnostics contain only the synthetic fixture.
-        eprintln!("Cold boot fixture failed: {}", String::from_utf8_lossy(&cold.stderr));
-        return Err("cold boot subprocess failed".into());
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn()?);
+    let deadline=std::time::Instant::now()+Duration::from_secs(25);
+    loop {
+        if let Some(exit)=cold.0.try_wait()? {
+            require(exit.success(), "cold boot subprocess failed")?;
+            break;
+        }
+        require(std::time::Instant::now()<deadline,"cold boot subprocess cleanup timed out")?;
+        std::thread::sleep(Duration::from_millis(100));
     }
-    require(cold.stdout.split(|byte| *byte==b'\n').filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .any(|report|report["cold_boot_started"]==true), "cold boot report missing")?;
+    eprintln!("virtual-display fixture: cold boot passed; physical desktop starting");
     // A second X server models the original physical desktop, so unplug acceptance exercises
     // a real native connection replacement and a late Drop of the previous capture lease.
     let physical=(120..140).map(|number|format!(":{number}")).find(|display|
@@ -104,6 +110,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     require(new_screen.display!=old_screen.display,"native capture did not change display")?;
     drop(old_screen);
     require(!new_screen.capture_frame()?.is_empty(),"old capture Drop closed the replacement display")?;
+    eprintln!("virtual-display fixture: unplug switched native capture");
     drop(new_screen);
     let pid=display_pid(&config.display)?;
     let mut command=Command::new("xmessage");
@@ -125,6 +132,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let captures=["virtual-before.png", "virtual-after.png"];
     for (index,name) in captures.iter().enumerate() {
+        eprintln!("virtual-display fixture: capture and video probe {index}");
         capture(&output.join(name))?;
         let screen=ScreenCapture::new()?;
         runtime.block_on(crate::video::probe((screen.width, screen.height),screen.display.clone(),None,
@@ -136,12 +144,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         require(window_ids(&config)?==ids, "desktop window changed across probes")?;
     }
     status(&fixture, "connected\n")?;
+    eprintln!("virtual-display fixture: checking retained desktop after replug");
     require(manager.poll()?.as_ref()==Some(&config), "replug replaced virtual desktop")?;
     require(display_pid(&config.display)?==pid && window_ids(&config)?==ids, "replug destroyed desktop state")?;
+    drop(_window);
+    manager.shutdown();
+    let socket=format!("/tmp/.X11-unix/X{}",config.display.trim_start_matches(':'));
+    require(!Path::new(&socket).exists(), "virtual display survived host shutdown")?;
     println!("{}",serde_json::json!({
         "physical_present_suppressed":true,"fallback_started_after_disconnect":true,
         "fallback_kept_after_reconnect":true,"display_pid_stable":true,"window_id_stable":true,
         "cold_boot_started":true,"ffmpeg_idle_before_probes":true,"ffmpeg_idle_after_probes":true,
+        "host_shutdown_released_display":true,
         "capture_count":2,"captures":captures
     }));
     Ok(())

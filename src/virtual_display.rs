@@ -62,31 +62,40 @@ enum MonitorStatus {
 
 struct Supervisor {
     child: Child,
+    process_group: i32,
 }
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        // `try_wait` may already have reaped the process. Do not signal its numeric PID after
-        // that point: the kernel may have reused it for an unrelated process.
-        match self.child.try_wait() {
-            Ok(Some(_)) | Err(_) => return,
-            Ok(None) => {}
-        }
-        // The embedded supervisor traps TERM and stops both its desktop session and Xvfb.
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
-        }
+        // The shell supervisor, dbus-run-session, the desktop session, and Xvfb share this
+        // dedicated process group. Stop the full tree so descendants cannot keep inherited
+        // stdout/stderr pipes open or survive a cold-start helper/service restart.
+        signal_process_group(self.process_group, libc::SIGTERM);
         let until = Instant::now() + Duration::from_secs(2);
         while Instant::now() < until {
-            if self.child.try_wait().ok().flatten().is_some() {
+            let child_exited = self.child.try_wait().ok().flatten().is_some();
+            if child_exited && !process_group_exists(self.process_group) {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
         }
+        signal_process_group(self.process_group, libc::SIGKILL);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn signal_process_group(process_group: i32, signal: i32) {
+    unsafe {
+        libc::kill(-process_group, signal);
+    }
+}
+
+fn process_group_exists(process_group: i32) -> bool {
+    if unsafe { libc::kill(-process_group, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 struct State {
@@ -384,6 +393,11 @@ impl VirtualDisplayManager {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         if std::env::var_os("UU_VIRTUAL_SESSION").is_none() && program_available("openbox-session")
         {
             command.env("UU_VIRTUAL_SESSION", "openbox-session");
@@ -391,7 +405,11 @@ impl VirtualDisplayManager {
         let child = command.spawn().map_err(|e| {
             format!("cannot start embedded Xvfb supervisor ({e}); install xvfb, xauth, x11-utils, dbus-x11, and openbox")
         })?;
-        let mut supervisor = Supervisor { child };
+        let process_group = child.id() as i32;
+        let mut supervisor = Supervisor {
+            child,
+            process_group,
+        };
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
             if let Some(status) = supervisor
