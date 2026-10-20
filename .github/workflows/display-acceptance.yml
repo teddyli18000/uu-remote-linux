@@ -1,0 +1,47 @@
+name: Display acceptance diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      binary_run_id:
+        description: CI run containing the Bionic host artifact (diagnostics only)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  display:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch compiled diagnostic host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BINARY_RUN_ID: ${{ inputs.binary_run_id }}
+        run: |
+          [[ "$BINARY_RUN_ID" =~ ^[0-9]+$ ]]
+          revision=$(gh run view "$BINARY_RUN_ID" --json headSha --jq .headSha)
+          echo "Diagnostic binary revision: $revision"
+          gh run download "$BINARY_RUN_ID" -n "uuremote-server-ubuntu-18.04-$revision" -D prebuilt
+          chmod +x prebuilt/uuremote-server
+      - name: Run real Xorg desktop fixture on Ubuntu 18.04
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace ubuntu:18.04 bash -euxo pipefail -c '
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              build-essential pkg-config curl ca-certificates xz-utils libtool xutils-dev \
+              xserver-xorg-core xserver-xorg-dev xserver-xorg-video-dummy libx11-dev \
+              libxtst6 libxfixes3 libvte-2.91-0 ffmpeg xauth x11-utils x11-xserver-utils \
+              xdotool dbus-x11 python3 gnome-session-flashback gnome-panel metacity
+            sh tests/install_ci_dummy.sh
+            python3 tests/same_session_display.py prebuilt/uuremote-server /workspace/same-session-diagnostic
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: same-session-diagnostic
+          path: same-session-diagnostic/**
+          if-no-files-found: warn

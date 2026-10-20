@@ -293,7 +293,7 @@ class XorgSession:
         xorg_args = [xorg_binary, self.display, "-noreset", "-nolisten", "tcp", "-auth", str(self.authority),
                      "-config", str(self.config_file), "-logfile", str(self.base / "xorg.log")]
         if os.geteuid() == 0:
-            xorg_args.extend(["-nohwaccess", "-novtswitch"])
+            xorg_args.append("-novtswitch")
         self.xorg = popen(
             xorg_args,
             self.env, self.uid, self.gid, self.xorg_log,
