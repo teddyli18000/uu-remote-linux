@@ -49,8 +49,10 @@ jobs:
               cargo build --release --locked
 
               binary="$CARGO_TARGET_DIR/release/uuremote-server"
-              python3 tests/auto_virtual_display.py "$binary" /workspace/virtual-display-release-acceptance
-              python3 tests/same_session_display.py "$binary" /workspace/same-session-release-acceptance
+              fixture_status=0
+              python3 tests/auto_virtual_display.py "$binary" /workspace/virtual-display-release-acceptance || fixture_status=$?
+              python3 tests/same_session_display.py "$binary" /workspace/same-session-release-acceptance || fixture_status=$?
+              test "$fixture_status" -eq 0
               ldd_output=/tmp/uuremote-server.ldd
               if ! ldd "$binary" > "$ldd_output"; then cat "$ldd_output"; exit 1; fi
               if grep -q "not found" "$ldd_output"; then cat "$ldd_output"; exit 1; fi
