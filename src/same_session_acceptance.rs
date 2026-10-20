@@ -117,12 +117,15 @@ fn ffmpeg_idle() -> bool {
     })
 }
 
-fn wait_ffmpeg_idle() -> bool {
-    for _ in 0..60 {
-        if ffmpeg_idle() { return true; }
-        thread::sleep(Duration::from_millis(100));
-    }
-    false
+fn wait_ffmpeg_idle(runtime: &tokio::runtime::Runtime) -> bool {
+    // Keep the current-thread runtime driving task cancellation and child reaping.
+    runtime.block_on(async {
+        for _ in 0..60 {
+            if ffmpeg_idle() { return true; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    })
 }
 
 fn verify_active_virtual(config: &DisplayConfig) -> Result<()> {
@@ -168,7 +171,7 @@ fn run_hotplug(fixture: &Path, artifact_dir: &Path, config: &DisplayConfig) -> R
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(crate::video::probe(after_switch, selected.display.clone(), None, None))?;
-    require(wait_ffmpeg_idle(), "FFmpeg remained active after the first video probe")?;
+    require(wait_ffmpeg_idle(&runtime), "FFmpeg remained active after the first video probe")?;
 
     // Replug DUMMY0 on the same framebuffer. Both outputs overlap intentionally so the root
     // geometry and the window placement remain stable while DUMMY1 stays primary.
@@ -185,7 +188,7 @@ fn run_hotplug(fixture: &Path, artifact_dir: &Path, config: &DisplayConfig) -> R
     let _ = crate::capture::x11_resized();
     let after_replug = capture_png(&selected, &artifact_dir.join("hotplug-after-replug.png"))?;
     runtime.block_on(crate::video::probe(after_replug, selected.display.clone(), None, None))?;
-    require(wait_ffmpeg_idle(), "FFmpeg remained active after the reconnect video probe")?;
+    require(wait_ffmpeg_idle(&runtime), "FFmpeg remained active after the reconnect video probe")?;
 
     manager.shutdown();
     require(manager.selected_display().is_none(), "manager shutdown retained its virtual selection")?;
@@ -229,10 +232,10 @@ fn run_cold(fixture: &Path, artifact_dir: &Path, config: &DisplayConfig) -> Resu
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let first = capture_png(&selected, &artifact_dir.join("cold-after-activation.png"))?;
     runtime.block_on(crate::video::probe(first, selected.display.clone(), None, None))?;
-    require(wait_ffmpeg_idle(), "FFmpeg remained active after the cold-start video probe")?;
+    require(wait_ffmpeg_idle(&runtime), "FFmpeg remained active after the cold-start video probe")?;
     let second = capture_png(&selected, &artifact_dir.join("cold-after-reconnect.png"))?;
     runtime.block_on(crate::video::probe(second, selected.display.clone(), None, None))?;
-    require(wait_ffmpeg_idle(), "FFmpeg remained active after the cold reconnect probe")?;
+    require(wait_ffmpeg_idle(&runtime), "FFmpeg remained active after the cold reconnect probe")?;
 
     manager.shutdown();
     require(manager.selected_display().is_none(), "cold manager shutdown retained its virtual selection")?;
