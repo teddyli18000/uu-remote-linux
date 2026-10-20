@@ -44,14 +44,16 @@ static void timeout_handler(int sig)
 {
     static const char message[] = "operation timed out\n";
     (void)sig;
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    ssize_t written = write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)written;
     _exit(2);
 }
 
 static int fail(void)
 {
     static const char message[] = "operation failed\n";
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    ssize_t written = write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)written;
     return 1;
 }
 

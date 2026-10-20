@@ -1052,7 +1052,7 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
                             }
                             OutputRefreshWait::PeerClosed => return Ok(()),
                             OutputRefreshWait::TimedOut => log::warn!("X11 output recovery timed out after encoder failure"),
-                            OutputRefreshWait::SenderClosed => output_refresh_open=false,
+                            OutputRefreshWait::SenderClosed => {},
                         }
                     }
                     return Err(error);

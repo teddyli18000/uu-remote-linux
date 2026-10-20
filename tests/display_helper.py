@@ -164,7 +164,7 @@ class DisplayHelperTests(unittest.TestCase):
         self.assertEqual(fixture.get_force("card0-HDMI-A-1"), "off")
         self.assert_failed_without_state(fixture)
 
-        fixture.state.mkdir(mode=0o700)
+        fixture.state.mkdir(mode=0o700, exist_ok=True)
         os.chmod(fixture.state, 0o700)
         (fixture.state / "state").write_text(
             f"uid={os.getuid()}\nconnector=card0-HDMI-A-1\n"
@@ -214,7 +214,7 @@ class DisplayHelperTests(unittest.TestCase):
 
     def test_root_boot_record_can_be_adopted_but_not_released_by_user(self):
         fixture = self.make_fixture()
-        fixture.state.mkdir(mode=0o700)
+        fixture.state.mkdir(mode=0o700, exist_ok=True)
         os.chmod(fixture.state, 0o700)
         (fixture.state / "state").write_text("uid=0\nconnector=card0-HDMI-A-1\n")
         os.chmod(fixture.state / "state", 0o600)
@@ -231,7 +231,7 @@ class DisplayHelperTests(unittest.TestCase):
 
     def test_untrusted_record_and_production_fixture_arguments_are_rejected(self):
         fixture = self.make_fixture()
-        fixture.state.mkdir(mode=0o700)
+        fixture.state.mkdir(mode=0o700, exist_ok=True)
         os.chmod(fixture.state, 0o700)
         different_uid = os.getuid() + 1
         if different_uid == 0:

@@ -405,7 +405,7 @@ impl WebRtcSession {
         if !cfg!(test) {
             let mut active = desktop_activation.subscribe();
             let mut closed = peer_closed.subscribe();
-            let mut output_refresh = video_output_refresh;
+            let output_refresh = video_output_refresh;
             tokio::spawn(async move {
                 if !wait_for_desktop_activation(&mut active, &mut closed).await { return; }
                 let Some(streaming_pc) = streaming_pc.upgrade() else { return; };
@@ -508,6 +508,7 @@ impl WebRtcSession {
         }
 
         // 监听 DataChannel
+        let peer_output_refresh = desktop_output_refresh.clone();
         pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
             let label = d.label().to_string();
             log::info!("New DataChannel received: {}", label);
@@ -518,7 +519,7 @@ impl WebRtcSession {
             let channel_desktop_request=peer_desktop_request.clone();
             let channel_promotion_pending=peer_promotion_pending.clone();
             let channel_activation=peer_desktop_activation.subscribe();
-            let channel_output_refresh=desktop_output_refresh.subscribe();
+            let channel_output_refresh=peer_output_refresh.subscribe();
             let channel_closed=peer_closed_signal.subscribe();
             let screen = control_capture.clone();
             let portal_desktop = portal_desktop.clone();
