@@ -452,6 +452,15 @@ def run_helper(binary, session, mode):
     output = stdout.decode("utf-8", errors="replace")
     diagnostic = stderr.decode("utf-8", errors="replace")
     if process.returncode:
+        # Synthetic display only: retain effective RandR state and the failing operation's
+        # server reply. These diagnostics never run against an operator's desktop.
+        diagnostics = []
+        for args in (["--query"], ["--output", "DUMMY1", "--mode", "uu-remote-1024x768-60", "--primary", "--pos", "0x0"], ["--query"]):
+            try:
+                diagnostics.append(command_output(["xrandr"] + args, session.env, session.uid, session.gid))
+            except RuntimeError as error:
+                diagnostics.append(str(error))
+        (artifact_dir / "randr-failure.log").write_text("\n".join(diagnostics), encoding="utf-8")
         raise RuntimeError("same-session Rust helper failed in {} mode (exit={})\n{}".format(
             mode, process.returncode, "\n".join(diagnostic.splitlines()[-40:])[-4000:]))
     lines = [line for line in output.splitlines() if line.strip()]

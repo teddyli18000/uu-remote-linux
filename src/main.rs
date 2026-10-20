@@ -598,11 +598,16 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
             for id in desktops { if let Some(old)=peers.remove(&id) { let _=old.pc.close().await; } }
             if ended { display_ended.notify_one(); }
             input.suspend_desktop();
+            let separate=!virtual_display::same_session_mode();
+            if !separate {
+                // Keep desktop promotion/offer arbitration behind the peer lock until the
+                // existing root's geometry is refreshed. DISPLAY itself has not changed.
+                let _=tokio::task::spawn_blocking(crate::capture::x11_resized).await;
+            }
             config.activate();
             drop(peers);
-            let separate=!virtual_display::same_session_mode();
             let switched=tokio::task::spawn_blocking(move || {
-                crate::capture::x11_resized();
+                if separate { crate::capture::x11_resized(); }
                 let screen=ScreenCapture::new()?;
                 if separate { terminal::refresh_local_views(); }
                 Ok::<_,String>((screen.width,screen.height))
