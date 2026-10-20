@@ -1017,7 +1017,9 @@ pub async fn stream_desktop(pc: Arc<RTCPeerConnection>, track: Arc<crate::video_
                 if changed.is_err() { output_refresh_open=false; }
                 else {
                     output_interrupted=true;
-                    output_restart_required |= reader.0.is_finished();
+                    // Even an unchanged root size can follow a failed no-output interval.
+                    // Replace its producer before a late FFmpeg failure consumes this refresh.
+                    output_restart_required=true;
                 }
                 continue;
             },
