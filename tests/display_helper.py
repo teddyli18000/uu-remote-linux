@@ -241,6 +241,10 @@ class DisplayHelperTests(unittest.TestCase):
         )
         os.chmod(fixture.state / "state", 0o600)
         fixture.set_status("card0-HDMI-A-1", "connected")
+        # Real records are created while holding a private lock; reconstruct that complete state
+        # so this case reaches the caller-ownership check rather than failing on a missing lock.
+        (fixture.state / "lock").write_text("")
+        os.chmod(fixture.state / "lock", 0o600)
         result = self.run_helper(fixture, "status")
         if os.getuid() == 0:
             self.assertEqual(result.returncode, 0, result.stderr)
