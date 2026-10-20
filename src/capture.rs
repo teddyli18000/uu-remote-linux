@@ -63,6 +63,13 @@ pub fn x11_resized() -> bool {
     }
 }
 
+/// Cached native geometry, refreshed by the display watcher or desktop-offer path.
+pub fn x11_dimensions() -> Option<(u32, u32)> {
+    let (mut width, mut height) = (0, 0);
+    (unsafe { x11_get_dimensions(&mut width, &mut height) } == 0 && width > 0 && height > 0)
+        .then_some((width as u32, height as u32))
+}
+
 pub struct ScreenCapture {
     pub backend: crate::desktop_backend::DesktopBackend,
     pub init_error: Option<String>,

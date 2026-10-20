@@ -1,4 +1,4 @@
-//! Persistent Xvfb fallback for X11 sessions without a connected physical monitor.
+//! Persistent virtual output in the existing Xorg session; separate Xvfb is opt-in.
 //!
 //! Call `prepare_environment` and `prepare_startup` from the synchronous entry point before
 //! starting Tokio or GTK. Runtime callers can poll `start_if_disconnected`; the selected display
@@ -107,6 +107,7 @@ struct State {
     owned_runtime_dir: bool,
     authority: Option<PathBuf>,
     owned_authority: bool,
+    output: Option<String>,
 }
 
 impl State {
@@ -120,6 +121,7 @@ impl State {
             owned_runtime_dir: false,
             authority: None,
             owned_authority: false,
+            output: None,
         }
     }
 }
@@ -147,6 +149,8 @@ impl Drop for State {
 pub struct VirtualDisplayManager {
     drm_root: PathBuf,
     state: Arc<Mutex<State>>,
+    same_session: bool,
+    fixture_output: Option<String>,
 }
 
 impl VirtualDisplayManager {
@@ -162,7 +166,17 @@ impl VirtualDisplayManager {
         Self {
             drm_root,
             state: Arc::new(Mutex::new(State::new())),
+            same_session: std::env::var("UU_VIRTUAL_DISPLAY_MODE").as_deref() != Ok("xvfb"),
+            fixture_output: None,
         }
+    }
+
+    /// Only the explicit account-free acceptance command may supply a synthetic output.
+    pub fn with_same_session_fixture(path: impl Into<PathBuf>, output: &str) -> Self {
+        let mut manager = Self::with_options(path.into());
+        manager.same_session = true;
+        manager.fixture_output = Some(output.to_owned());
+        manager
     }
 
     /// Make a private copy of the current Xauthority records and publish it before threads start.
@@ -173,6 +187,14 @@ impl VirtualDisplayManager {
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.authority.is_some() {
+            return Ok(());
+        }
+
+        if self.same_session {
+            // Keep the real GDM authority path: it may be created/refreshed after host startup.
+            state.authority = Some(std::env::var_os("XAUTHORITY").map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Xauthority")))
+                .unwrap_or_default());
             return Ok(());
         }
 
@@ -266,6 +288,7 @@ impl VirtualDisplayManager {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let previous = state.config.clone();
         state.config = None;
+        state.output = None;
         state.disconnected_samples = 0;
         state.supervisor_failure = None;
         drop(state.supervisor.take());
@@ -298,6 +321,9 @@ impl VirtualDisplayManager {
         }
         if state.authority.is_none() {
             return Err("call prepare_environment before polling the virtual display".into());
+        }
+        if self.same_session {
+            return self.poll_same_session(state);
         }
         if let Some(error) = &state.supervisor_failure {
             return Err(error.clone());
@@ -342,6 +368,36 @@ impl VirtualDisplayManager {
                 Ok(Some(config))
             }
         }
+    }
+
+    fn poll_same_session(&self, state: &mut State) -> Result<Option<DisplayConfig>, String> {
+        if state.output.is_none() {
+            if physical_monitor_status(&self.drm_root) != MonitorStatus::Disconnected {
+                state.disconnected_samples = 0;
+                return Ok(None);
+            }
+            state.disconnected_samples = state.disconnected_samples.saturating_add(1);
+            if state.disconnected_samples < DISCONNECTED_SAMPLES { return Ok(None); }
+        }
+        let authority = state.authority.as_ref().unwrap();
+        let displays: Vec<String> = std::env::var("DISPLAY").ok().filter(|s| !s.is_empty())
+            .map(|display| vec![display]).unwrap_or_else(|| vec![":0".into(), ":1".into()]);
+        let size = std::env::var("UU_VIRTUAL_SIZE").unwrap_or_else(|_| "1920x1080".into());
+        let mut failure = String::new();
+        for display in displays {
+            match crate::same_session_display::ensure(&display, Some(authority), &size,
+                state.output.as_deref(), self.fixture_output.as_deref()) {
+                Ok(Some(output)) => {
+                    state.output = Some(output);
+                    let config = DisplayConfig { display, authority: authority.clone() };
+                    state.config = Some(config.clone());
+                    return Ok(Some(config));
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => failure = error,
+            }
+        }
+        Err(failure)
     }
 
     fn current_virtual_display(&self, state: &State) -> Result<Option<DisplayConfig>, String> {
@@ -446,6 +502,8 @@ pub fn display_config() -> Option<DisplayConfig> {
         .get()
         .and_then(|v| v.read().ok().and_then(|config| config.clone()))
 }
+
+pub fn same_session_mode() -> bool { global_manager().same_session }
 
 /// Prepare the private authority file from the synchronous process entry point.
 pub fn prepare_environment() -> Result<(), String> {
@@ -560,6 +618,10 @@ fn drm_connector_kind(name: &str) -> ConnectorKind {
 
 fn classify_connector(name: &str) -> ConnectorKind {
     let lower = name.to_ascii_lowercase();
+    if lower.strip_prefix("virtual").is_some_and(|suffix|
+        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())) {
+        return ConnectorKind::Virtual;
+    }
     if ["virtual-", "writeback-"]
         .iter()
         .any(|prefix| lower.starts_with(prefix))

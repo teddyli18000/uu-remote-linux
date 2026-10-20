@@ -116,7 +116,8 @@ viewer does not reconnect them automatically.
 | Mac viewer Cmd | With 「使用 macOS 快捷键」 off the Mac viewer sends Cmd=VK_LWIN 0x5B, Option=0xA4, Ctrl=0xA2; connect header `controller_platform`=4 is macOS. For Mac controllers Cmd is held back: Cmd+C/V/A/F/X/Z → Ctrl+key (terminal: Cmd+C/V → Ctrl+Shift+C/V), other combos/alone → Super |
 | `UU_TERMINAL_SHORTCUTS=0` | disable Ctrl+V → Ctrl+Shift+V in focused X11 terminals (Mac Cmd and Ctrl both arrive as VK_LCONTROL) |
 | `contrib/virtual-desktop/` | Xvfb + session (`UU_VIRTUAL_SESSION`, `UU_VIRTUAL_BUS=user|private`) for monitorless hosts; serve it with `DISPLAY=:99` |
-| `UU_AUTO_VIRTUAL_DISPLAY=0` | opt out of automatic persistent Xvfb fallback for X11; enabled by default when physical connector status confirms no monitor |
+| `UU_AUTO_VIRTUAL_DISPLAY=0` | opt out of automatic persistent same-session virtual output for X11; enabled when physical connector status confirms no monitor |
+| `UU_VIRTUAL_DISPLAY_MODE=xvfb` | opt into the independent legacy Xvfb desktop; default uses an existing Xorg virtual output (Intel VirtualHeads setup required) |
 | `UU_VIDEO_ENCODER` | `cpu`: libx264; `vaapi`: explicit Intel/AMD; `nvenc`: force; unset: NVENC→CPU only if `/proc/driver/nvidia/version` or `/dev/nvidia0` exists, else CPU (#10) |
 | `UU_VIDEO_CODEC=h264` | force H.264 even when the viewer negotiated H.265 (default: H.265 when both sides support it) |
 | `UU_FFMPEG_ROOT` | FFmpeg prefix (`bin/ffmpeg`, libs in `lib/x86_64-linux-gnu`) |
@@ -150,7 +151,8 @@ every 60 s.
 | `src/initialization.rs`, `src/control_protocol.rs`, `src/protocol.rs` | protobuf encoders/decoders for CONTROL |
 | `src/session_ice.rs`, `src/network_diagnostics.rs` | cloud ICE servers, address-free path diagnostics |
 | `src/desktop_backend.rs`, `src/wayland.rs`, `src/portal*.rs` | backend selection, Hyprland, GNOME/KDE portal |
-| `src/virtual_display.rs` | physical connector polling, debounced Xvfb startup, stable private Xauthority; choose once until host shutdown, independent of remote viewers |
+| `src/same_session_display.rs` | bounded RandR activation of existing Intel VirtualHeads outputs; never creates or replaces Xorg |
+| `src/virtual_display.rs` | physical connector polling and debounced same-session virtual output; independent Xvfb only explicitly selected |
 | `c_engine/portal_eis.inc` | scaled GNOME input through the existing Portal session's EIS connection; all input must use EIS once connected |
 | `c_engine/x11_engine.c`, `c_engine/clipboard.c` | X11 capture/input/selection |
 | `c_engine/wayland_engine.c`, `c_engine/portal_engine.c` | Wayland and portal engines |
@@ -167,7 +169,9 @@ started a second full host server instead, so check that a subcommand exists in 
 It is a local diagnostic, not official-client acceptance. `src/x11_acceptance.rs` contains an opt-in
 Xvfb-only input/clipboard test; never run that fixture against a user's real desktop.
 
-`virtual-display-acceptance <synthetic-drm-dir> <output-dir>` is account-free CI acceptance. It must
+`same-session-acceptance <synthetic-drm-dir> <output-dir> <hotplug|cold>` is account-free Xorg dummy acceptance, orchestrated by `tests/same_session_display.py`. It checks original Xorg/root/window/application identity and complete desktop panels. Its explicit DUMMY1 fixture is never accepted by normal host configuration. Intel hardware and GNOME cold boot still require actual target acceptance. Default automatic fallback enables an existing virtual RandR output on the original Xorg session; configure Intel VirtualHeads once (`contrib/virtual-desktop/SAME_SESSION.md`). Do not substitute a separate session when this output is missing. Same-session shutdown leaves the output and applications alive.
+
+`virtual-display-acceptance <synthetic-drm-dir> <output-dir>` is legacy independent-Xvfb CI acceptance; select `UU_VIRTUAL_DISPLAY_MODE=xvfb` explicitly. It must
 run without DISPLAY/WAYLAND_DISPLAY and refuses `/sys` fixtures. Normal hosts never accept a DRM
 override. Prepare virtual-display environment before Tokio/GTK threads; runtime switching changes
 explicit display configs and child environments, never process environment. Close only active desktop

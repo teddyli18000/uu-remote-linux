@@ -158,3 +158,10 @@ wsl --unregister uu-bionic-test
 
 注销会永久删除该临时发行版及其中的进程/文件。不要把命令中的名称改成已有发行版。
 
+
+
+### 原桌面补屏修正（aic.4）
+
+aic.3 的自动 Xvfb 是独立 Openbox 会话，不能保留原 GNOME 窗口。aic.4 默认改为在原 Xorg 中启用驱动提供的虚拟输出；先按 [同会话配置](../contrib/virtual-desktop/SAME_SESSION.md) 配置 Intel VirtualHeads。一次初始图形会话重启会关闭当时应用，此后运行中拔屏不更换 Xorg。不要将旧的 DISPLAY=:99 或 Xvfb 服务当作原桌面配置；服务应使用实际 GNOME Xorg DISPLAY/XAUTHORITY。冷启动要求原用户图形会话能在无屏时启动。
+
+历史部署/客户端结果仅适用于当时记录版本。本修正的 dummy CI 验证不代表 Intel 显卡、GDM 无屏登录或本版本官方客户端已经完成车端验收。

@@ -1,0 +1,265 @@
+#!/bin/sh
+# Configure Intel Xorg VirtualHeads for the existing same-session desktop.
+
+set -u
+
+CONFIG_DIR=/etc/X11/xorg.conf.d
+CONFIG_FILE=$CONFIG_DIR/30-uu-virtualheads.conf
+OWNER_MARKER='# Managed by uu-same-session-setup'
+END_MARKER='# End uu-same-session-setup'
+TEMP_FILE=
+
+cleanup() {
+    if [ -n "$TEMP_FILE" ]; then
+        rm -f "$TEMP_FILE" >/dev/null 2>&1 || :
+    fi
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  uu-same-session-setup check
+  uu-same-session-setup install [--dry-run]
+  uu-same-session-setup remove
+
+Run check as the graphical-session user. install/remove write under /etc and
+require root. install --dry-run prints the Xorg configuration without writing.
+EOF
+    exit 2
+}
+
+fail() {
+    printf 'error: %s\n' "$1" >&2
+    exit 1
+}
+
+write_config() {
+    cat <<'EOF'
+# Managed by uu-same-session-setup
+Section "OutputClass"
+    Identifier "UU Remote Linux VirtualHeads"
+    MatchDriver "i915"
+    Driver "intel"
+    Option "AccelMethod" "sna"
+    Option "VirtualHeads" "1"
+EndSection
+# End uu-same-session-setup
+EOF
+}
+
+os_value() {
+    key=$1
+    [ -r /etc/os-release ] || return 0
+    value=$(sed -n "s/^${key}=//p" /etc/os-release 2>/dev/null | sed -n '1p')
+    value=${value#\"}
+    value=${value%\"}
+    printf '%s' "$value"
+}
+
+count_i915_devices() {
+    count=0
+    for device in /sys/class/drm/card[0-9]*/device; do
+        [ -d "$device" ] || continue
+        vendor=$(cat "$device/vendor" 2>/dev/null || :)
+        [ "$vendor" = 0x8086 ] || continue
+        driver_path=$(readlink "$device/driver" 2>/dev/null || :)
+        case "$driver_path" in
+            */i915) count=$((count + 1)) ;;
+        esac
+    done
+    printf '%s' "$count"
+}
+
+intel_ddx_installed() {
+    for module in \
+        /usr/lib/xorg/modules/drivers/intel_drv.so \
+        /usr/lib/x86_64-linux-gnu/xorg/modules/drivers/intel_drv.so
+    do
+        [ -f "$module" ] && return 0
+    done
+    return 1
+}
+
+config_status() {
+    if [ -L "$CONFIG_FILE" ]; then
+        printf 'symlink'
+    elif [ -f "$CONFIG_FILE" ]; then
+        if grep -Fqx "$OWNER_MARKER" "$CONFIG_FILE" 2>/dev/null \
+            && grep -Fqx "$END_MARKER" "$CONFIG_FILE" 2>/dev/null
+        then
+            printf 'managed-marked'
+        else
+            printf 'other'
+        fi
+    elif [ -e "$CONFIG_FILE" ]; then
+        printf 'non-file'
+    else
+        printf 'absent'
+    fi
+}
+
+create_expected_temp() {
+    [ -d "$CONFIG_DIR" ] || return 1
+    TEMP_FILE=$(mktemp "$CONFIG_DIR/.uu-same-session-setup.XXXXXX") || return 1
+    write_config >"$TEMP_FILE" || return 1
+    chmod 0600 "$TEMP_FILE" || return 1
+}
+
+config_is_exactly_owned() {
+    [ -f "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ] || return 1
+    create_expected_temp || return 1
+    cmp -s "$CONFIG_FILE" "$TEMP_FILE"
+}
+
+require_target_platform() {
+    [ "$(uname -s 2>/dev/null || :)" = Linux ] \
+        || fail 'this setup applies only to Linux Ubuntu 18.04; no files changed'
+    os_id=$(os_value ID)
+    os_version=$(os_value VERSION_ID)
+    [ "$os_id" = ubuntu ] && [ "$os_version" = 18.04 ] \
+        || fail 'this setup applies only to Ubuntu 18.04; no files changed'
+}
+
+require_i915() {
+    i915_devices=$(count_i915_devices)
+    [ "$i915_devices" -gt 0 ] \
+        || fail 'no Intel i915 DRM device found; no files changed'
+}
+
+require_intel_ddx() {
+    intel_ddx_installed \
+        || fail 'intel_drv.so is absent; install xserver-xorg-video-intel manually, then retry; no package was installed'
+}
+
+do_check() {
+    os_id=$(os_value ID)
+    os_version=$(os_value VERSION_ID)
+    target_os=no
+    if [ "$os_id" = ubuntu ] && [ "$os_version" = 18.04 ]; then
+        target_os=yes
+    fi
+
+    i915_devices=$(count_i915_devices)
+    intel_ddx=no
+    if intel_ddx_installed; then intel_ddx=installed; fi
+
+    xrandr_status=unavailable
+    virtual_outputs=0
+    virtual_connected=0
+    if command -v xrandr >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            xrandr_status=failed_or_timed_out
+            if query=$(timeout --kill-after=1s 3s xrandr --query 2>/dev/null); then
+                xrandr_status=available
+                virtual_outputs=$(printf '%s\n' "$query" \
+                    | awk '$1 ~ /^VIRTUAL[0-9]+$/ { n++ } END { print n+0 }')
+                virtual_connected=$(printf '%s\n' "$query" \
+                    | awk '$1 ~ /^VIRTUAL[0-9]+$/ && $2 == "connected" { n++ } END { print n+0 }')
+            fi
+        fi
+    fi
+
+    setup_config=$(config_status)
+    ready=yes
+    [ "$target_os" = yes ] || ready=no
+    [ "$i915_devices" -gt 0 ] || ready=no
+    [ "$intel_ddx" = installed ] || ready=no
+    [ "$xrandr_status" = available ] || ready=no
+    [ "$virtual_outputs" -gt 0 ] || ready=no
+
+    printf 'target_ubuntu_18_04=%s\n' "$target_os"
+    printf 'drm_i915_devices=%s\n' "$i915_devices"
+    printf 'intel_ddx=%s\n' "$intel_ddx"
+    printf 'xrandr=%s\n' "$xrandr_status"
+    printf 'virtual_outputs=%s\n' "$virtual_outputs"
+    printf 'virtual_connected=%s\n' "$virtual_connected"
+    printf 'setup_config=%s\n' "$setup_config"
+    printf 'ready=%s\n' "$ready"
+
+    [ "$ready" = yes ]
+}
+
+do_install() {
+    dry_run=no
+    if [ "$#" -eq 1 ] && [ "$1" = --dry-run ]; then
+        dry_run=yes
+    elif [ "$#" -ne 0 ]; then
+        usage
+    fi
+
+    if [ "$dry_run" = no ] && [ "$(id -u)" -ne 0 ]; then
+        fail 'install requires root; no files changed'
+    fi
+    require_target_platform
+    require_i915
+    require_intel_ddx
+
+    if [ "$dry_run" = yes ]; then
+        printf '# Destination: %s\n' "$CONFIG_FILE" >&2
+        write_config
+        return 0
+    fi
+
+    [ ! -L "$CONFIG_DIR" ] || fail 'Xorg config directory is a symlink; refusing to write'
+    if [ -e "$CONFIG_DIR" ] && [ ! -d "$CONFIG_DIR" ]; then
+        fail 'Xorg config path is not a directory; refusing to write'
+    fi
+    mkdir -p "$CONFIG_DIR" || fail 'cannot create Xorg config directory'
+
+    if [ -L "$CONFIG_FILE" ]; then
+        fail 'setup target is a symlink; refusing to overwrite it'
+    elif [ -e "$CONFIG_FILE" ]; then
+        if config_is_exactly_owned; then
+            printf 'setup_config=already-installed\n'
+            return 0
+        fi
+        fail 'setup target exists and is not the exact managed configuration; refusing to overwrite it'
+    fi
+
+    create_expected_temp || fail 'cannot prepare the managed Xorg configuration'
+    chmod 0644 "$TEMP_FILE" || fail 'cannot set Xorg configuration permissions'
+    # A hard-link create publishes the complete file atomically and fails if a target appeared.
+    ln "$TEMP_FILE" "$CONFIG_FILE" 2>/dev/null \
+        || fail 'setup target appeared during installation; refusing to overwrite it'
+    rm -f "$TEMP_FILE" || fail 'configuration was installed but the temporary link could not be removed'
+    TEMP_FILE=
+    printf 'setup_config=installed\n'
+}
+
+do_remove() {
+    [ "$#" -eq 0 ] || usage
+    [ "$(id -u)" -eq 0 ] || fail 'remove requires root; no files changed'
+
+    if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
+        printf 'setup_config=absent\n'
+        return 0
+    fi
+    [ ! -L "$CONFIG_FILE" ] \
+        || fail 'setup target is a symlink; refusing to remove it'
+    [ -f "$CONFIG_FILE" ] \
+        || fail 'setup target is not a regular file; refusing to remove it'
+    config_is_exactly_owned \
+        || fail 'setup target is modified or not owned by this tool; refusing to remove it'
+    rm "$CONFIG_FILE" || fail 'cannot remove the managed Xorg configuration'
+    printf 'setup_config=removed\n'
+}
+
+case "${1-}" in
+    check)
+        [ "$#" -eq 1 ] || usage
+        do_check
+        ;;
+    install)
+        shift
+        do_install "$@"
+        ;;
+    remove)
+        shift
+        do_remove "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

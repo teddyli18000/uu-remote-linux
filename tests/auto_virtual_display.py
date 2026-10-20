@@ -10,6 +10,9 @@ import sys
 import tempfile
 import zlib
 
+# This fixture tests the explicitly requested separate Xvfb desktop, not original-session continuity.
+os.environ["UU_VIRTUAL_DISPLAY_MODE"] = "xvfb"
+
 
 REQUIRED_FLAGS = (
     "physical_present_suppressed",

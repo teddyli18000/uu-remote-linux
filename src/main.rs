@@ -3,6 +3,8 @@
 
 mod desktop_backend;
 mod virtual_display;
+mod same_session_display;
+mod same_session_acceptance;
 mod virtual_display_acceptance;
 mod desktop_session;
 mod desktop_power;
@@ -72,10 +74,15 @@ enum RoomEvent { Signal(SignalingEvent), PromoteDesktop(String), DisplayEnded }
 /// Tool peers can predate the one-way switch from an unplugged X11 desktop.
 /// Resolve their dormant desktop state only when ownership is actually granted.
 fn current_desktop_capture(screen: Arc<ScreenCapture>) -> Arc<ScreenCapture> {
-    if virtual_display::display_config().is_some_and(|config| config.display != screen.display) {
+    if let Some(config) = virtual_display::display_config().filter(|_| screen.backend == desktop_backend::DesktopBackend::X11) {
         static CURRENT: std::sync::OnceLock<std::sync::Mutex<Option<Arc<ScreenCapture>>>> = std::sync::OnceLock::new();
         let mut cached = CURRENT.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(current) = cached.as_ref().filter(|current| current.init_error.is_none()) { return current.clone(); }
+        // Output activation can resize the same root without changing DISPLAY. Compare cached
+        // native geometry; this path also handles input packets and must not round-trip Xorg.
+        let matches = |current: &ScreenCapture| current.init_error.is_none() && current.display == config.display
+            && crate::capture::x11_dimensions() == Some((current.width, current.height));
+        if matches(&screen) { return screen; }
+        if let Some(previous) = cached.as_ref().filter(|current| matches(current)) { return previous.clone(); }
         let current = Arc::new(ScreenCapture::new().unwrap_or_else(ScreenCapture::unavailable));
         *cached = Some(current.clone());
         current
@@ -225,6 +232,9 @@ fn show_running_host() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("same-session-acceptance") {
+        return same_session_acceptance::run();
+    }
     if std::env::args().nth(1).as_deref() == Some("virtual-display-acceptance") {
         return virtual_display_acceptance::run();
     }
@@ -569,7 +579,7 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
                 Ok(Some(config)) => { failures=0; config },
                 Ok(None) => continue,
                 Err(error) => {
-                    if virtual_display::display_config().is_some() {
+                    if virtual_display::display_config().is_some() && !virtual_display::same_session_mode() {
                         // Native Xlib connections cannot survive their X server being replaced.
                         log::error!("Selected virtual display failed: {error}; stopping host for service restart");
                         let _=stop.send(true);
@@ -590,9 +600,11 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
             input.suspend_desktop();
             config.activate();
             drop(peers);
-            let switched=tokio::task::spawn_blocking(|| {
+            let separate=!virtual_display::same_session_mode();
+            let switched=tokio::task::spawn_blocking(move || {
+                crate::capture::x11_resized();
                 let screen=ScreenCapture::new()?;
-                terminal::refresh_local_views();
+                if separate { terminal::refresh_local_views(); }
                 Ok::<_,String>((screen.width,screen.height))
             }).await;
             match switched {

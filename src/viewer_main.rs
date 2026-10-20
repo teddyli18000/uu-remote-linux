@@ -10,6 +10,7 @@ use viewer::clipboard;
 #[path="clipboard_rich.rs"] mod clipboard_rich;
 #[cfg(test)] #[path="terminal.rs"] mod terminal;
 #[cfg(test)] #[path="virtual_display.rs"] mod virtual_display;
+#[cfg(test)] #[path="same_session_display.rs"] mod same_session_display;
 #[cfg(test)] #[path="desktop_backend.rs"] mod desktop_backend;
 #[cfg(test)] #[path="file_trans.rs"] mod file_trans;
 #[cfg(test)] #[path="initialization.rs"] mod initialization;
