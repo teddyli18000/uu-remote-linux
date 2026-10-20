@@ -66,6 +66,12 @@ struct Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
+        // `try_wait` may already have reaped the process. Do not signal its numeric PID after
+        // that point: the kernel may have reused it for an unrelated process.
+        match self.child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {}
+        }
         // The embedded supervisor traps TERM and stops both its desktop session and Xvfb.
         #[cfg(unix)]
         unsafe {
@@ -87,6 +93,7 @@ struct State {
     disconnected_samples: u8,
     config: Option<DisplayConfig>,
     supervisor: Option<Supervisor>,
+    supervisor_failure: Option<String>,
     runtime_dir: Option<PathBuf>,
     owned_runtime_dir: bool,
     authority: Option<PathBuf>,
@@ -99,6 +106,7 @@ impl State {
             disconnected_samples: 0,
             config: None,
             supervisor: None,
+            supervisor_failure: None,
             runtime_dir: None,
             owned_runtime_dir: false,
             authority: None,
@@ -250,6 +258,7 @@ impl VirtualDisplayManager {
         let previous = state.config.clone();
         state.config = None;
         state.disconnected_samples = 0;
+        state.supervisor_failure = None;
         drop(state.supervisor.take());
         if state.owned_authority {
             if let Some(path) = state.authority.take() {
@@ -281,6 +290,9 @@ impl VirtualDisplayManager {
         if state.authority.is_none() {
             return Err("call prepare_environment before polling the virtual display".into());
         }
+        if let Some(error) = &state.supervisor_failure {
+            return Err(error.clone());
+        }
         let child_status = state
             .supervisor
             .as_mut()
@@ -289,10 +301,12 @@ impl VirtualDisplayManager {
             .map_err(|e| format!("cannot inspect Xvfb supervisor: {e}"))?
             .flatten();
         if let Some(status) = child_status {
-            drop(state.supervisor.take());
-            state.config = None;
-            state.disconnected_samples = 0;
-            return Err(format!("virtual display supervisor exited with {status}"));
+            let error = format!("virtual display supervisor exited with {status}");
+            // Keep both the selected config and the exited Child handle until host shutdown.
+            // Existing Xlib objects may still hold this display; silently recreating it would
+            // give new operations a different server while those objects remain bound to the old one.
+            state.supervisor_failure = Some(error.clone());
+            return Err(error);
         }
         if let Some(config) = &state.config {
             return Ok(Some(config.clone()));
@@ -536,17 +550,14 @@ fn classify_connector(name: &str) -> ConnectorKind {
     }
     if [
         "vga-",
-        "dvi-i-",
-        "dvi-d-",
-        "dvi-a-",
+        "dvi-",
         "composite-",
         "svideo-",
         "lvds-",
         "component-",
         "din-",
         "dp-",
-        "hdmi-a-",
-        "hdmi-b-",
+        "hdmi-",
         "tv-",
         "edp-",
         "dsi-",
@@ -564,9 +575,9 @@ fn classify_connector(name: &str) -> ConnectorKind {
 
 fn probe_xrandr() -> Option<MonitorStatus> {
     let display = std::env::var_os("DISPLAY")?;
-    let mut command = Command::new("xrandr");
+    let mut command = Command::new("timeout");
     command
-        .args(["--query"])
+        .args(["2s", "xrandr", "--query"])
         .env("DISPLAY", display)
         .env("LC_ALL", "C");
     if let Some(authority) = std::env::var_os("XAUTHORITY") {
@@ -597,7 +608,11 @@ fn parse_xrandr(output: &str) -> Option<MonitorStatus> {
                 }
             }
             ConnectorKind::Unknown => {
-                // Ignore non-output xrandr lines; a recognized output must still be present.
+                // xrandr metadata lines do not use these status tokens. An unfamiliar output
+                // may be a physical connector, so do not conclude that all monitors are absent.
+                if matches!(status, "connected" | "disconnected") {
+                    uncertain = true;
+                }
             }
             ConnectorKind::Virtual => {}
         }
@@ -775,8 +790,8 @@ fn program_available(program: &str) -> bool {
 }
 
 fn display_ready(display: &str, authority: &Path) -> bool {
-    Command::new("xdpyinfo")
-        .args(["-display", display])
+    Command::new("timeout")
+        .args(["2s", "xdpyinfo", "-display", display])
         .env("XAUTHORITY", authority)
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
@@ -949,7 +964,19 @@ mod tests {
             parse_xrandr("HDMI-1 disconnected\n"),
             Some(MonitorStatus::Disconnected)
         );
+        assert_eq!(
+            parse_xrandr("DVI-1 connected primary 1920x1080+0+0\n"),
+            Some(MonitorStatus::Connected)
+        );
         assert_eq!(parse_xrandr("Virtual-1 connected 1920x1080+0+0\n"), None);
+        assert_eq!(
+            parse_xrandr("DP-1 disconnected\nMystery-1 connected 1280x720+0+0\n"),
+            None
+        );
+        assert_eq!(
+            parse_xrandr("HDMI-1 disconnected\nMystery-1 disconnected\n"),
+            None
+        );
         assert_eq!(parse_xrandr("Screen 0: minimum 8 x 8\n"), None);
     }
 
@@ -977,13 +1004,15 @@ mod tests {
         let _ = fs::create_dir_all(path.parent().unwrap());
         fs::write(
             &path,
-            record(0xffff, b"98", b"MIT-MAGIC-COOKIE-1", b"cookie")
+            record(1, b"98", b"MIT-MAGIC-COOKIE-1", b"cookie")
                 .into_iter()
+                .chain(record(0xffff, b"97", b"MIT-MAGIC-COOKIE-1", b"cookie"))
                 .chain(record(256, b"99", b"MIT-MAGIC-COOKIE-1", b"cookie"))
                 .collect::<Vec<_>>(),
         )
         .unwrap();
         assert!(!authority_has_cookie(&path, 98));
+        assert!(authority_has_cookie(&path, 97));
         assert!(authority_has_cookie(&path, 99));
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

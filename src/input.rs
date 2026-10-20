@@ -539,6 +539,24 @@ mod lifecycle_tests {
     use super::*;
     use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
     #[test]
+    fn display_switch_revokes_old_lease_and_allows_a_new_desktop() {
+        let input=Arc::new(InputInjector::without_desktop());
+        let old=input.desktop_session();
+        old.connected();
+        input.held.lock().unwrap().keys.insert(0xffe1);
+        input.suspend_desktop();
+        assert!(input.held.lock().unwrap().keys.is_empty());
+        old.connected();
+        old.with_current(||panic!("old display must not publish after switching"));
+        old.with_input(||panic!("old display must not inject after switching"));
+        let new=input.desktop_session();
+        new.connected();
+        old.disconnected();
+        let count=AtomicUsize::new(0);
+        new.with_input(||{count.fetch_add(1,Ordering::Relaxed);});
+        assert_eq!(count.load(Ordering::Relaxed),1);
+    }
+    #[test]
     fn current_owner_can_publish_while_disconnected_but_cannot_inject() {
         let input=Arc::new(InputInjector::without_desktop());
         let session=input.desktop_session();

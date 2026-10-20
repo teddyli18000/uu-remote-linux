@@ -67,7 +67,7 @@ use webrtc::WebRtcSession;
 
 /// Set before a normal return when the host must come back in the other mode (signed in / out).
 static RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-enum RoomEvent { Signal(SignalingEvent), PromoteDesktop(String) }
+enum RoomEvent { Signal(SignalingEvent), PromoteDesktop(String), DisplayEnded }
 
 /// Tool peers can predate the one-way switch from an unplugged X11 desktop.
 /// Resolve their dormant desktop state only when ownership is actually granted.
@@ -161,6 +161,7 @@ mod peer_release_tests {
 /// Re-executes this host; the new instance opens its window so the user sees the result.
 fn restart_host() -> ! {
     use std::os::unix::process::CommandExt;
+    virtual_display::shutdown();
     let error = std::process::Command::new("/proc/self/exe").args(std::env::args_os().skip(1)).env("UU_SHOW_WINDOW", "1").exec();
     eprintln!("restart failed: {error}");
     std::process::exit(1);
@@ -510,7 +511,8 @@ async fn run_host() -> Result<(), Box<dyn std::error::Error>> {
         let _ = signal_tx.send(true);
     });
     let webrtc_sessions: Arc<Mutex<HashMap<String, WebRtcSession>>> = Arc::new(Mutex::new(HashMap::new()));
-    let display_task = watch_virtual_display(webrtc_sessions.clone(), input.clone(), shutdown.clone());
+    let display_ended=Arc::new(tokio::sync::Notify::new());
+    let display_task = watch_virtual_display(webrtc_sessions.clone(), input.clone(), shutdown.clone(), shutdown_tx.clone(), display_ended.clone());
     let mut assist = if assist_enabled { Some(assist::Assist::start(&mut shutdown, unified).await?) } else { None };
     if let Some(session) = assist.as_ref().filter(|_| unified) {
         present_on_usr1(session.ui());
@@ -531,7 +533,7 @@ async fn run_host() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut immediate_shutdown = shutdown.clone();
     let result = tokio::select! {
-        result = serve(capture, input.clone(), &mut shutdown, &mut assist, &mut commands, webrtc_sessions.clone()) => result,
+        result = serve(capture, input.clone(), &mut shutdown, &mut assist, &mut commands, webrtc_sessions.clone(), display_ended) => result,
         _ = immediate_shutdown.changed() => Ok(()),
     };
     display_task.abort();
@@ -553,7 +555,7 @@ async fn run_host() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, input: Arc<InputInjector>,
-    mut shutdown: tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    mut shutdown: tokio::sync::watch::Receiver<bool>, stop: tokio::sync::watch::Sender<bool>, display_ended: Arc<tokio::sync::Notify>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -567,6 +569,12 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
                 Ok(Some(config)) => { failures=0; config },
                 Ok(None) => continue,
                 Err(error) => {
+                    if virtual_display::display_config().is_some() {
+                        // Native Xlib connections cannot survive their X server being replaced.
+                        log::error!("Selected virtual display failed: {error}; stopping host for service restart");
+                        let _=stop.send(true);
+                        return;
+                    }
                     // Missing dependencies remain actionable without flooding a service journal.
                     if failures==0 || failures%30==0 { log::warn!("Automatic virtual display unavailable: {error}"); }
                     failures=failures.saturating_add(1);
@@ -576,9 +584,12 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
             if virtual_display::display_config().as_ref()==Some(&config) { continue; }
             let mut peers=sessions.lock().await;
             let desktops: Vec<_>=peers.iter().filter(|(_,peer)|peer.is_desktop()).map(|(id,_)|id.clone()).collect();
+            let ended=!desktops.is_empty();
             for id in desktops { if let Some(old)=peers.remove(&id) { let _=old.pc.close().await; } }
+            if ended { display_ended.notify_one(); }
             input.suspend_desktop();
             config.activate();
+            drop(peers);
             let switched=tokio::task::spawn_blocking(|| {
                 let screen=ScreenCapture::new()?;
                 terminal::refresh_local_views();
@@ -594,7 +605,7 @@ fn watch_virtual_display(sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, i
 }
 
 async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutdown: &mut tokio::sync::watch::Receiver<bool>,
-    assist: &mut Option<assist::Assist>, commands: &mut mpsc::Receiver<assist::Command>, webrtc_sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>) -> Result<(), Box<dyn std::error::Error>> {
+    assist: &mut Option<assist::Assist>, commands: &mut mpsc::Receiver<assist::Command>, webrtc_sessions: Arc<Mutex<HashMap<String, WebRtcSession>>>, display_ended: Arc<tokio::sync::Notify>) -> Result<(), Box<dyn std::error::Error>> {
     let portal_desktop = (capture.backend == desktop_backend::DesktopBackend::Portal && !desktop_backend::headless())
         .then(|| Arc::new(desktop_session::PortalDesktop::new(capture.clone())));
     let mut auth = if let Some(session) = assist.as_ref() { session.client.clone() } else {
@@ -714,6 +725,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
             let event = tokio::select! {
                 biased;
                 _ = shutdown.changed() => Some(RoomEvent::Signal(SignalingEvent::Stop)),
+                _ = display_ended.notified() => Some(RoomEvent::DisplayEnded),
                 command = commands.recv(), if assist.is_some() => Some(RoomEvent::Signal(SignalingEvent::AssistCommand(command.unwrap_or(assist::Command::Stop)))),
                 _ = assist_tick.tick(), if assist.is_some() => Some(RoomEvent::Signal(SignalingEvent::AssistTick)),
                 request = desktop_request_rx.recv() => request.map(RoomEvent::PromoteDesktop),
@@ -721,6 +733,12 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
             };
             let Some(event) = event else { break; };
             let evt = match event {
+                RoomEvent::DisplayEnded => {
+                    if !webrtc_sessions.lock().await.values().any(WebRtcSession::is_desktop) {
+                        if let Some(s)=assist.as_mut() { s.session_ended()?; }
+                    }
+                    continue;
+                }
                 RoomEvent::PromoteDesktop(ice) => {
                     let mut sessions = webrtc_sessions.lock().await;
                     match promote_desktop_peer(&mut sessions, &ice, &input, portal_desktop.as_ref()).await {
