@@ -154,7 +154,8 @@ def main():
             }
         )
         command = [str(binary), "virtual-display-acceptance", str(fixture), str(output_dir)]
-        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=180)
+        result = subprocess.run(command, env=env, universal_newlines=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
         if result.returncode != 0:
             stderr_tail = "\n".join(result.stderr.splitlines()[-40:])[-4000:]
             (artifact_dir / "acceptance.log").write_text(
